@@ -38,13 +38,65 @@ def verify_arc(msg_bytes):
         # Método 1: Intentar con arc_verify directamente del módulo dkim
         try:
             result = dkim.arc_verify(msg_bytes)
-            print(f"Resultado de dkim.arc_verify: {result}")
-            if result:
-                print("✓ Verificación ARC exitosa.")
-                return True
+            
+            # arc_verify devuelve una tupla de 3 elementos:
+            # (CV Result, lista de diccionarios de resultados, razón del resultado)
+            print("Resultado de dkim.arc_verify:")
+            
+            if isinstance(result, tuple) and len(result) == 3:
+                cv_result, result_dicts, result_reason = result
+                
+                print(f"  CV Result: {cv_result}")
+                print(f"  Razón: {result_reason}")
+                print(f"  Número de resultados: {len(result_dicts) if result_dicts else 0}")
+                
+                if result_dicts:
+                    print("  Detalles de resultados:")
+                    import json
+                    for i, result_dict in enumerate(result_dicts):
+                        print(f"    Resultado #{i+1}:")
+                        print(json.dumps(result_dict, indent=6, default=str))
+                
+                # Evaluar el resultado basado en CV Result
+                # Importar las constantes de dkim si están disponibles
+                try:
+                    from dkim import CV_Pass, CV_Fail, CV_None
+                    if cv_result == CV_Pass:
+                        print("✓ Verificación ARC exitosa (CV_Pass).")
+                        return True
+                    elif cv_result == CV_Fail:
+                        print("✗ Verificación ARC falló (CV_Fail).")
+                        return False
+                    elif cv_result == CV_None:
+                        print("⚠ Verificación ARC no concluyente (CV_None).")
+                        return False
+                    else:
+                        print(f"? Resultado ARC desconocido: {cv_result}")
+                        return False
+                except ImportError:
+                    # Si no se pueden importar las constantes, usar comparación de strings
+                    cv_str = str(cv_result).lower()
+                    if 'pass' in cv_str:
+                        print("✓ Verificación ARC exitosa.")
+                        return True
+                    elif 'fail' in cv_str:
+                        print("✗ Verificación ARC falló.")
+                        return False
+                    elif 'none' in cv_str:
+                        print("⚠ Verificación ARC no concluyente.")
+                        return False
+                    else:
+                        print(f"? Resultado ARC desconocido: {cv_result}")
+                        return False
             else:
-                print("✗ La verificación ARC falló.")
-                return False
+                print(f"  Formato inesperado: {type(result)} = {result}")
+                # Fallback: evaluar como booleano
+                if result:
+                    print("✓ Verificación ARC exitosa.")
+                    return True
+                else:
+                    print("✗ La verificación ARC falló.")
+                    return False
         except AttributeError as e:
             print(f"dkim.arc_verify no disponible: {e}")
             
