@@ -9,6 +9,7 @@ Una aplicación en Python para verificar firmas digitales DKIM y ARC en correos 
 - **Análisis detallado**: Proporciona información exhaustiva sobre cabeceras de autenticación
 - **Diagnósticos**: Explica las causas de fallos en la verificación
 - **Formato visual**: Salida organizada y fácil de leer con separadores y códigos de estado
+- **Registro de resultados**: Guarda automáticamente un archivo de texto con todos los resultados en el mismo directorio del email analizado
 
 ## Instalación
 
@@ -40,6 +41,10 @@ python check_dkim.py "C:\ruta\al\email.eml"
 # Verificar un archivo de texto con contenido de email
 python check_dkim.py "/home/usuario/mensaje.txt"
 ```
+
+**Nota**: El script genera automáticamente un archivo de texto con los resultados en el mismo directorio que el archivo de entrada. El nombre del archivo de salida incluye un timestamp para evitar sobrescribir resultados anteriores:
+- Formato: `[nombre_archivo]_verification_YYYYMMDD_HHMMSS.txt`
+- Ejemplo: `email_verification_20251114_153045.txt`
 
 ## Formatos de archivo soportados
 

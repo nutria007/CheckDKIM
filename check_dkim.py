@@ -3,6 +3,8 @@ import argparse
 import email
 import sys
 import dkim
+import os
+from datetime import datetime
 
 
 def verify_arc(msg_bytes):
@@ -192,10 +194,42 @@ def main():
     )
     args = parser.parse_args()
 
+    # Preparar archivo de salida en el mismo directorio que el archivo de entrada
+    input_dir = os.path.dirname(os.path.abspath(args.email_file))
+    input_filename = os.path.basename(args.email_file)
+    input_name_without_ext = os.path.splitext(input_filename)[0]
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_filename = f"{input_name_without_ext}_verification_{timestamp}.txt"
+    output_path = os.path.join(input_dir, output_filename)
+    
+    # Clase para duplicar la salida a consola y archivo
+    class TeeOutput:
+        def __init__(self, *files):
+            self.files = files
+        def write(self, obj):
+            for f in self.files:
+                f.write(obj)
+                f.flush()
+        def flush(self):
+            for f in self.files:
+                f.flush()
+    
+    # Abrir archivo de salida y redirigir stdout
+    try:
+        output_file = open(output_path, 'w', encoding='utf-8')
+        original_stdout = sys.stdout
+        sys.stdout = TeeOutput(sys.stdout, output_file)
+    except Exception as e:
+        print(f"⚠ No se pudo crear el archivo de salida: {e}")
+        output_file = None
+        original_stdout = None
+
     print("=" * 80)
     print("VERIFICADOR DE FIRMAS DKIM/ARC")
     print("=" * 80)
     print(f"Archivo: {args.email_file}")
+    print(f"Salida: {output_path}")
+    print(f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     try:
         with open(args.email_file, 'rb') as f:
@@ -203,9 +237,15 @@ def main():
         print(f"Tamaño del archivo: {len(msg_bytes)} bytes")
     except FileNotFoundError:
         print(f"✗ Error: El archivo '{args.email_file}' no fue encontrado.", file=sys.stderr)
+        if output_file:
+            output_file.close()
+            sys.stdout = original_stdout
         sys.exit(1)
     except Exception as e:
         print(f"✗ Error al leer el archivo: {e}", file=sys.stderr)
+        if output_file:
+            output_file.close()
+            sys.stdout = original_stdout
         sys.exit(1)
 
     # Análisis inicial del mensaje
@@ -287,6 +327,12 @@ def main():
             print("  El mensaje no contiene firmas digitales para verificar.")
     
     print("=" * 80)
+    
+    # Cerrar archivo de salida y restaurar stdout
+    if output_file:
+        sys.stdout = original_stdout
+        output_file.close()
+        print(f"\n✓ Resultados guardados en: {output_path}")
 
 
 if __name__ == "__main__":
