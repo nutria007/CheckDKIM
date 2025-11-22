@@ -1,11 +1,12 @@
-# Verificador de Firmas DKIM/ARC
+# Verificador de Autenticación de Email (DKIM/ARC/SPF)
 
-Una aplicación en Python para verificar firmas digitales DKIM y ARC en correos electrónicos. Esta herramienta proporciona análisis detallado y verificación criptográfica de la autenticidad e integridad de mensajes de correo electrónico.
+Una aplicación en Python para verificar firmas digitales DKIM, cadenas ARC y registros SPF en correos electrónicos. Esta herramienta proporciona análisis detallado y verificación criptográfica de la autenticidad e integridad de mensajes de correo electrónico.
 
 ## Características
 
 - **Verificación DKIM**: Valida firmas DKIM para confirmar la autenticidad del remitente
 - **Verificación ARC**: Verifica cadenas ARC (Authenticated Received Chain) para correos reenviados
+- **Verificación SPF**: Valida registros SPF para verificar que el servidor está autorizado a enviar correos
 - **Análisis detallado**: Proporciona información exhaustiva sobre cabeceras de autenticación
 - **Diagnósticos**: Explica las causas de fallos en la verificación
 - **Formato visual**: Salida organizada y fácil de leer con separadores y códigos de estado
@@ -21,25 +22,43 @@ Una aplicación en Python para verificar firmas digitales DKIM y ARC en correos 
 ### Instalar dependencias
 
 ```bash
-pip install dkimpy
+pip install dkimpy pyspf
 ```
+
+**Nota**: La biblioteca `pyspf` es opcional pero recomendada para verificación SPF completa.
 
 ## Uso
 
 ### Sintaxis básica
 
 ```bash
-python check_dkim.py <ruta_al_archivo_email>
+# Modo simple (por defecto)
+python check_email.py <ruta_al_archivo_email>
+
+# Modo verbose (detallado)
+python check_email.py -v <ruta_al_archivo_email>
 ```
+
+### Opciones
+
+- `-v, --verbose`: Muestra información detallada del proceso de verificación, incluyendo todas las cabeceras, parámetros de firma y diagnósticos completos.
+
+Sin la opción `-v`, el script muestra solo un resumen conciso con la información esencial.
 
 ### Ejemplos
 
 ```bash
-# Verificar un archivo .eml
-python check_dkim.py "C:\ruta\al\email.eml"
+# Verificar un archivo .eml (modo simple)
+python check_email.py "C:\ruta\al\email.eml"
+
+# Verificar con información detallada (modo verbose)
+python check_email.py -v "C:\ruta\al\email.eml"
 
 # Verificar un archivo de texto con contenido de email
-python check_dkim.py "/home/usuario/mensaje.txt"
+python check_email.py "/home/usuario/mensaje.txt"
+
+# Verificar con todos los detalles
+python check_email.py --verbose "/home/usuario/mensaje.txt"
 ```
 
 **Nota**: El script genera automáticamente un archivo de texto con los resultados en el mismo directorio que el archivo de entrada. El nombre del archivo de salida incluye un timestamp para evitar sobrescribir resultados anteriores:
@@ -62,26 +81,43 @@ python check_dkim.py "/home/usuario/mensaje.txt"
 
 ### Información mostrada
 
+#### Modo simple (sin `-v`)
+- Información completa del mensaje (From, To, Subject, Date, Message-ID)
+- Resumen de cabeceras de autenticación encontradas
+- Resultado de la verificación (✓ SUCCESS o ✗ FAIL)
+- Método de verificación utilizado (ARC o DKIM)
+- Ubicación del archivo de resultados
+
+#### Modo verbose (con `-v`)
 1. **Análisis inicial del mensaje**
-   - Información básica (From, To, Subject, Date, Message-ID)
+   - Información completa (From, To, Subject, Date, Message-ID)
    - Tamaño del archivo
-   - Presencia de cabeceras de autenticación
+   - Todas las cabeceras de autenticación encontradas
 
 2. **Verificación ARC** (si está presente)
-   - Cabeceras ARC-Seal encontradas
-   - Cabeceras ARC-Message-Signature
-   - Cabeceras ARC-Authentication-Results
-   - Resultado de verificación automática
+   - Todas las cabeceras ARC-Seal encontradas
+   - Todas las cabeceras ARC-Message-Signature
+   - Todas las cabeceras ARC-Authentication-Results
+   - Detalles del resultado de verificación automática
+   - Análisis de cada componente de la cadena ARC
 
 3. **Verificación DKIM** (si está presente)
-   - Cabeceras DKIM-Signature
-   - Parámetros de firma (algoritmo, dominio, selector, etc.)
+   - Todas las cabeceras DKIM-Signature encontradas
+   - Parámetros completos de cada firma (algoritmo, dominio, selector, timestamps, etc.)
+   - Hash del cuerpo del mensaje
    - Resultado de verificación criptográfica
 
-4. **Resultado final**
+4. **Verificación SPF** (si pyspf está instalado)
+   - IP del servidor remitente
+   - Dominio del remitente
+   - Resultado de la verificación SPF (pass/fail/softfail/neutral/none)
+   - Explicación del resultado
+
+5. **Resultado final detallado**
    - Estado general de la verificación
    - Método utilizado (ARC o DKIM)
-   - Diagnósticos y posibles causas de fallo
+   - Diagnósticos completos y posibles causas de fallo
+   - Recomendaciones para solución de problemas
 
 ## Casos de uso
 
@@ -125,14 +161,18 @@ Posibles causas:
 
 ```
 CheckDKIM/
-├── check_dkim.py          # Script principal
-├── README.md              # Este archivo
-└── requirements.txt       # Dependencias (opcional)
+├── check_email.py         # Script principal de verificación
+├── export_email.py         # Exportador a PDF
+├── export_email_gui.py     # Interfaz gráfica
+├── README.md               # Este archivo
+├── export_email.md         # Documentación del exportador
+└── requirements.txt        # Dependencias (opcional)
 ```
 
 ## Dependencias
 
 - **dkimpy**: Biblioteca principal para verificación DKIM/ARC
+- **pyspf**: Biblioteca para verificación SPF (opcional pero recomendada)
 - **email**: Módulo estándar de Python para parsing de emails
 - **argparse**: Módulo estándar para parsing de argumentos
 
@@ -141,7 +181,8 @@ CheckDKIM/
 - **Python 3.6+**
 - **DKIM (DomainKeys Identified Mail)**: RFC 6376
 - **ARC (Authenticated Received Chain)**: RFC 8617
-- **DNS**: Para obtención de claves públicas
+- **SPF (Sender Policy Framework)**: RFC 7208
+- **DNS**: Para obtención de claves públicas y registros SPF
 
 ## Contribución
 

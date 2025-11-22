@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
 import argparse
 import email
@@ -7,20 +9,40 @@ import os
 import re
 from datetime import datetime
 
+# Configurar la codificación de salida para manejar Unicode en Windows
+if sys.platform == 'win32':
+    import codecs
+    if sys.stdout.encoding != 'utf-8':
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'replace')
+        sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'replace')
+
+def safe_print(*args, **kwargs):
+    """Imprime de forma segura, reemplazando caracteres problemáticos si es necesario"""
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        # Reemplazar caracteres Unicode problemáticos
+        safe_args = []
+        for arg in args:
+            if isinstance(arg, str):
+                arg = arg.replace('✓', '[OK]').replace('✗', '[X]').replace('⚠', '[!]')
+            safe_args.append(arg)
+        print(*safe_args, **kwargs)
+
 try:
     import spf
     SPF_AVAILABLE = True
 except ImportError:
     SPF_AVAILABLE = False
-    print("⚠ Advertencia: Biblioteca 'pyspf' no instalada. La verificación SPF no estará disponible.")
-    print("  Instale con: pip install pyspf")
+    safe_print("⚠ Advertencia: Biblioteca 'pyspf' no instalada. La verificación SPF no estará disponible.")
+    safe_print("  Instale con: pip install pyspf")
 
 
 def verify_arc(msg_bytes, verbose=False):
     """Verifica la firma ARC de un mensaje."""
-    print("=" * 60)
-    print("VERIFICACIÓN ARC")
-    print("=" * 60)
+    safe_print("=" * 60)
+    safe_print("VERIFICACIÓN ARC")
+    safe_print("=" * 60)
     
     try:
         # Parse del mensaje para análisis detallado
@@ -32,23 +54,23 @@ def verify_arc(msg_bytes, verbose=False):
         arc_auth_results = msg.get_all('ARC-Authentication-Results') or []
         
         if verbose:
-            print(f"Cabeceras ARC-Seal encontradas: {len(arc_seals)}")
+            safe_print(f"Cabeceras ARC-Seal encontradas: {len(arc_seals)}")
             for i, seal in enumerate(arc_seals, 1):
-                print(f"  ARC-Seal #{i}: {seal[:100]}{'...' if len(seal) > 100 else ''}")
+                safe_print(f"  ARC-Seal #{i}: {seal[:100]}{'...' if len(seal) > 100 else ''}")
                 
-            print(f"Cabeceras ARC-Message-Signature encontradas: {len(arc_signatures)}")
+            safe_print(f"Cabeceras ARC-Message-Signature encontradas: {len(arc_signatures)}")
             for i, sig in enumerate(arc_signatures, 1):
-                print(f"  ARC-Message-Signature #{i}: {sig[:100]}{'...' if len(sig) > 100 else ''}")
+                safe_print(f"  ARC-Message-Signature #{i}: {sig[:100]}{'...' if len(sig) > 100 else ''}")
                 
-            print(f"Cabeceras ARC-Authentication-Results encontradas: {len(arc_auth_results)}")
+            safe_print(f"Cabeceras ARC-Authentication-Results encontradas: {len(arc_auth_results)}")
             for i, auth in enumerate(arc_auth_results, 1):
-                print(f"  ARC-Authentication-Results #{i}: {auth[:100]}{'...' if len(auth) > 100 else ''}")
+                safe_print(f"  ARC-Authentication-Results #{i}: {auth[:100]}{'...' if len(auth) > 100 else ''}")
         else:
-            print(f"Cabeceras encontradas: {len(arc_seals)} ARC-Seal, {len(arc_signatures)} ARC-Signature, {len(arc_auth_results)} ARC-Auth-Results")
+            safe_print(f"Cabeceras encontradas: {len(arc_seals)} ARC-Seal, {len(arc_signatures)} ARC-Signature, {len(arc_auth_results)} ARC-Auth-Results")
         
         # Intentar verificar ARC de manera simple
         if verbose:
-            print("\nIntentando verificación automática de ARC...")
+            safe_print("\nIntentando verificación automática de ARC...")
         
         # Método 1: Intentar con arc_verify directamente del módulo dkim
         try:
@@ -57,93 +79,93 @@ def verify_arc(msg_bytes, verbose=False):
             # arc_verify devuelve una tupla de 3 elementos:
             # (CV Result, lista de diccionarios de resultados, razón del resultado)
             if verbose:
-                print("Resultado de dkim.arc_verify:")
+                safe_print("Resultado de dkim.arc_verify:")
             
             if isinstance(result, tuple) and len(result) == 3:
                 cv_result, result_dicts, result_reason = result
                 
                 if verbose:
-                    print(f"  CV Result: {cv_result}")
-                    print(f"  Razón: {result_reason}")
-                    print(f"  Número de resultados: {len(result_dicts) if result_dicts else 0}")
+                    safe_print(f"  CV Result: {cv_result}")
+                    safe_print(f"  Razón: {result_reason}")
+                    safe_print(f"  Número de resultados: {len(result_dicts) if result_dicts else 0}")
                     
                     if result_dicts:
-                        print("  Detalles de resultados:")
+                        safe_print("  Detalles de resultados:")
                         import json
                         for i, result_dict in enumerate(result_dicts):
-                            print(f"    Resultado #{i+1}:")
-                            print(json.dumps(result_dict, indent=6, default=str))
+                            safe_print(f"    Resultado #{i+1}:")
+                            safe_print(json.dumps(result_dict, indent=6, default=str))
                 
                 # Evaluar el resultado basado en CV Result
                 # Importar las constantes de dkim si están disponibles
                 try:
                     from dkim import CV_Pass, CV_Fail, CV_None
                     if cv_result == CV_Pass:
-                        print("✓ Verificación ARC exitosa (CV_Pass).")
+                        safe_print("✓ Verificación ARC exitosa (CV_Pass).")
                         return True
                     elif cv_result == CV_Fail:
-                        print("✗ Verificación ARC falló (CV_Fail).")
+                        safe_print("✗ Verificación ARC falló (CV_Fail).")
                         return False
                     elif cv_result == CV_None:
-                        print("⚠ Verificación ARC no concluyente (CV_None).")
+                        safe_print("⚠ Verificación ARC no concluyente (CV_None).")
                         return False
                     else:
-                        print(f"? Resultado ARC desconocido: {cv_result}")
+                        safe_print(f"? Resultado ARC desconocido: {cv_result}")
                         return False
                 except ImportError:
                     # Si no se pueden importar las constantes, usar comparación de strings
                     cv_str = str(cv_result).lower()
                     if 'pass' in cv_str:
-                        print("✓ Verificación ARC exitosa.")
+                        safe_print("✓ Verificación ARC exitosa.")
                         return True
                     elif 'fail' in cv_str:
-                        print("✗ Verificación ARC falló.")
+                        safe_print("✗ Verificación ARC falló.")
                         return False
                     elif 'none' in cv_str:
-                        print("⚠ Verificación ARC no concluyente.")
+                        safe_print("⚠ Verificación ARC no concluyente.")
                         return False
                     else:
-                        print(f"? Resultado ARC desconocido: {cv_result}")
+                        safe_print(f"? Resultado ARC desconocido: {cv_result}")
                         return False
             else:
                 if verbose:
-                    print(f"  Formato inesperado: {type(result)} = {result}")
+                    safe_print(f"  Formato inesperado: {type(result)} = {result}")
                 # Fallback: evaluar como booleano
                 if result:
-                    print("✓ Verificación ARC exitosa.")
+                    safe_print("✓ Verificación ARC exitosa.")
                     return True
                 else:
-                    print("✗ La verificación ARC falló.")
+                    safe_print("✗ La verificación ARC falló.")
                     return False
         except AttributeError as e:
-            print(f"dkim.arc_verify no disponible: {e}")
+            safe_print(f"dkim.arc_verify no disponible: {e}")
             
         # Método 2: Verificar manualmente las cabeceras ARC
         if verbose:
-            print("\nVerificación manual de cabeceras ARC...")
+            safe_print("\nVerificación manual de cabeceras ARC...")
         if arc_seals and arc_signatures and arc_auth_results:
             if verbose:
-                print("✓ Se encontraron todas las cabeceras ARC necesarias.")
-                print("⚠ Nota: Verificación criptográfica completa de ARC requiere implementación específica.")
-                print("  Para verificación completa, se necesita validar:")
-                print("  - Firma criptográfica de cada ARC-Seal")
-                print("  - Integridad de la cadena ARC")
-                print("  - Validez de las claves públicas")
+                safe_print("✓ Se encontraron todas las cabeceras ARC necesarias.")
+                safe_print("⚠ Nota: Verificación criptográfica completa de ARC requiere implementación específica.")
+                safe_print("  Para verificación completa, se necesita validar:")
+                safe_print("  - Firma criptográfica de cada ARC-Seal")
+                safe_print("  - Integridad de la cadena ARC")
+                safe_print("  - Validez de las claves públicas")
             return False  # No podemos hacer verificación criptográfica completa
         else:
             if verbose:
-                print("✗ No se encontraron todas las cabeceras ARC necesarias.")
+                safe_print("✗ No se encontraron todas las cabeceras ARC necesarias.")
             return False
             
     except Exception as e:
-        print(f"✗ Error en la verificación ARC: {e}", file=sys.stderr)
+        safe_print(f"✗ Error en la verificación ARC: {e}", file=sys.stderr)
         return False
 
 def verify_dkim(msg_bytes, verbose=False):
     """Verifica la firma DKIM de un mensaje."""
-    print("=" * 60)
-    print("VERIFICACIÓN DKIM")
-    print("=" * 60)
+    safe_print("=" * 60)
+    safe_print("VERIFICACIÓN DKIM")
+    safe_print("=" * 60)
     
     try:
         # Parse del mensaje para análisis detallado
@@ -153,11 +175,11 @@ def verify_dkim(msg_bytes, verbose=False):
         dkim_signatures = msg.get_all('DKIM-Signature') or []
         
         if verbose:
-            print(f"Cabeceras DKIM-Signature encontradas: {len(dkim_signatures)}")
+            safe_print(f"Cabeceras DKIM-Signature encontradas: {len(dkim_signatures)}")
             
             for i, signature in enumerate(dkim_signatures, 1):
-                print(f"\nDKIM-Signature #{i}:")
-                print(f"  Cabecera completa: {signature[:200]}{'...' if len(signature) > 200 else ''}")
+                safe_print(f"\nDKIM-Signature #{i}:")
+                safe_print(f"  Cabecera completa: {signature[:200]}{'...' if len(signature) > 200 else ''}")
                 
                 # Parsear los parámetros de la firma DKIM
                 sig_params = {}
@@ -167,55 +189,55 @@ def verify_dkim(msg_bytes, verbose=False):
                         key, value = param.split('=', 1)
                         sig_params[key.strip()] = value.strip()
                 
-                print("  Parámetros de la firma:")
+                safe_print("  Parámetros de la firma:")
                 for key, value in sig_params.items():
                     if key in ['v', 'a', 'd', 's', 'c', 'h', 't']:
-                        print(f"    {key}: {value}")
+                        safe_print(f"    {key}: {value}")
                     elif key == 'b':
-                        print(f"    {key}: {value[:50]}{'...' if len(value) > 50 else ''} (firma)")
+                        safe_print(f"    {key}: {value[:50]}{'...' if len(value) > 50 else ''} (firma)")
                     elif key == 'bh':
-                        print(f"    {key}: {value[:50]}{'...' if len(value) > 50 else ''} (hash del cuerpo)")
+                        safe_print(f"    {key}: {value[:50]}{'...' if len(value) > 50 else ''} (hash del cuerpo)")
             
-            print("\nIntentando verificación DKIM...")
+            safe_print("\nIntentando verificación DKIM...")
         else:
-            print(f"Cabeceras encontradas: {len(dkim_signatures)} DKIM-Signature")
+            safe_print(f"Cabeceras encontradas: {len(dkim_signatures)} DKIM-Signature")
         
         # Realizar verificación DKIM
         result = dkim.verify(msg_bytes)
         
         if result:
-            print("✓ Verificación DKIM exitosa.")
+            safe_print("✓ Verificación DKIM exitosa.")
             if verbose:
-                print("  La firma DKIM es válida y el mensaje no ha sido alterado.")
+                safe_print("  La firma DKIM es válida y el mensaje no ha sido alterado.")
             return True
         else:
-            print("✗ La firma DKIM no es válida.")
+            safe_print("✗ La firma DKIM no es válida.")
             if verbose:
-                print("  Posibles causas:")
-                print("  - El mensaje ha sido modificado después de la firma")
-                print("  - La clave pública no se puede obtener del DNS")
-                print("  - La firma está malformada")
-                print("  - El selector o dominio son incorrectos")
+                safe_print("  Posibles causas:")
+                safe_print("  - El mensaje ha sido modificado después de la firma")
+                safe_print("  - La clave pública no se puede obtener del DNS")
+                safe_print("  - La firma está malformada")
+                safe_print("  - El selector o dominio son incorrectos")
             return False
             
     except dkim.DKIMException as e:
-        print(f"✗ Excepción DKIM: {e}", file=sys.stderr)
+        safe_print(f"✗ Excepción DKIM: {e}", file=sys.stderr)
         if verbose:
-            print("  Error específico de la biblioteca DKIM.")
+            safe_print("  Error específico de la biblioteca DKIM.")
         return False
     except Exception as e:
-        print(f"✗ Error general en la verificación DKIM: {e}", file=sys.stderr)
+        safe_print(f"✗ Error general en la verificación DKIM: {e}", file=sys.stderr)
         return False
 
 def verify_spf(msg_bytes, verbose=False):
     """Verifica el registro SPF de un mensaje."""
-    print("=" * 60)
-    print("VERIFICACIÓN SPF")
-    print("=" * 60)
+    safe_print("=" * 60)
+    safe_print("VERIFICACIÓN SPF")
+    safe_print("=" * 60)
     
     if not SPF_AVAILABLE:
-        print("✗ La biblioteca pyspf no está instalada.")
-        print("  Instale con: pip install pyspf")
+        safe_print("✗ La biblioteca pyspf no está instalada.")
+        safe_print("  Instale con: pip install pyspf")
         return False
     
     try:
@@ -228,7 +250,7 @@ def verify_spf(msg_bytes, verbose=False):
         sender_ip = None
         
         if verbose:
-            print(f"Cabeceras Received encontradas: {len(received_headers)}")
+            safe_print(f"Cabeceras Received encontradas: {len(received_headers)}")
         
         # Buscar la IP en las cabeceras Received (usualmente en la primera)
         for received in received_headers:
@@ -239,7 +261,7 @@ def verify_spf(msg_bytes, verbose=False):
                 # Tomar la última IP encontrada en el primer Received (generalmente es la del remitente)
                 sender_ip = ips[-1]
                 if verbose:
-                    print(f"IP del remitente detectada: {sender_ip}")
+                    safe_print(f"IP del remitente detectada: {sender_ip}")
                 break
         
         # Obtener el dominio del remitente
@@ -254,74 +276,74 @@ def verify_spf(msg_bytes, verbose=False):
         if '@' in sender_email:
             sender_domain = sender_email.split('@')[1]
         else:
-            print("✗ No se pudo extraer el dominio del remitente.")
+            safe_print("✗ No se pudo extraer el dominio del remitente.")
             return False
         
         if verbose:
-            print(f"Remitente: {sender_email}")
-            print(f"Dominio: {sender_domain}")
+            safe_print(f"Remitente: {sender_email}")
+            safe_print(f"Dominio: {sender_domain}")
         
         if not sender_ip:
-            print("✗ No se pudo detectar la IP del remitente en las cabeceras Received.")
+            safe_print("✗ No se pudo detectar la IP del remitente en las cabeceras Received.")
             if verbose:
-                print("  Nota: La verificación SPF requiere la IP del servidor remitente.")
+                safe_print("  Nota: La verificación SPF requiere la IP del servidor remitente.")
             return False
         
         # Verificar SPF
         if verbose:
-            print(f"\nVerificando SPF para IP {sender_ip} y dominio {sender_domain}...")
+            safe_print(f"\nVerificando SPF para IP {sender_ip} y dominio {sender_domain}...")
         
         # Realizar consulta SPF
         result, explanation = spf.check2(i=sender_ip, s=sender_email, h=sender_domain)
         
         if verbose:
-            print(f"Resultado SPF: {result}")
-            print(f"Explicación: {explanation}")
+            safe_print(f"Resultado SPF: {result}")
+            safe_print(f"Explicación: {explanation}")
         
         # Evaluar resultado
         if result == 'pass':
-            print("✓ Verificación SPF exitosa.")
+            safe_print("✓ Verificación SPF exitosa.")
             if verbose:
-                print("  El servidor está autorizado para enviar correos desde este dominio.")
+                safe_print("  El servidor está autorizado para enviar correos desde este dominio.")
             return True
         elif result == 'fail':
-            print("✗ Verificación SPF falló.")
+            safe_print("✗ Verificación SPF falló.")
             if verbose:
-                print("  El servidor NO está autorizado para enviar correos desde este dominio.")
-                print(f"  Detalles: {explanation}")
+                safe_print("  El servidor NO está autorizado para enviar correos desde este dominio.")
+                safe_print(f"  Detalles: {explanation}")
             return False
         elif result == 'softfail':
-            print("⚠ Verificación SPF softfail.")
+            safe_print("⚠ Verificación SPF softfail.")
             if verbose:
-                print("  El servidor probablemente no está autorizado (política suave).")
-                print(f"  Detalles: {explanation}")
+                safe_print("  El servidor probablemente no está autorizado (política suave).")
+                safe_print(f"  Detalles: {explanation}")
             return False
         elif result == 'neutral':
-            print("⚠ Verificación SPF neutral.")
+            safe_print("⚠ Verificación SPF neutral.")
             if verbose:
-                print("  El dominio no hace afirmaciones sobre la autorización.")
+                safe_print("  El dominio no hace afirmaciones sobre la autorización.")
             return False
         elif result == 'none':
-            print("⚠ Sin registro SPF.")
+            safe_print("⚠ Sin registro SPF.")
             if verbose:
-                print("  El dominio no tiene un registro SPF publicado.")
+                safe_print("  El dominio no tiene un registro SPF publicado.")
             return False
         elif result == 'temperror':
-            print("⚠ Error temporal en verificación SPF.")
+            safe_print("⚠ Error temporal en verificación SPF.")
             if verbose:
-                print("  Error temporal al consultar el registro SPF.")
+                safe_print("  Error temporal al consultar el registro SPF.")
             return False
         elif result == 'permerror':
-            print("✗ Error permanente en verificación SPF.")
+            safe_print("✗ Error permanente en verificación SPF.")
             if verbose:
-                print("  El registro SPF contiene errores.")
+                safe_print("  El registro SPF contiene errores.")
             return False
         else:
-            print(f"? Resultado SPF desconocido: {result}")
+            safe_print(f"? Resultado SPF desconocido: {result}")
             return False
             
     except Exception as e:
-        print(f"✗ Error en la verificación SPF: {e}", file=sys.stderr)
+        safe_print(f"✗ Error en la verificación SPF: {e}", file=sys.stderr)
         if verbose:
             import traceback
             traceback.print_exc()
@@ -370,34 +392,34 @@ def main():
         original_stdout = sys.stdout
         sys.stdout = TeeOutput(sys.stdout, output_file)
     except Exception as e:
-        print(f"⚠ No se pudo crear el archivo de salida: {e}")
+        safe_print(f"⚠ No se pudo crear el archivo de salida: {e}")
         output_file = None
         original_stdout = None
 
-    print("=" * 80)
-    print("VERIFICADOR DE AUTENTICACIÓN DE EMAIL (DKIM/ARC/SPF)")
-    print("=" * 80)
-    print(f"Archivo: {args.email_file}")
+    safe_print("=" * 80)
+    safe_print("VERIFICADOR DE AUTENTICACIÓN DE EMAIL (DKIM/ARC/SPF)")
+    safe_print("=" * 80)
+    safe_print(f"Archivo: {args.email_file}")
     if args.verbose:
-        print(f"Salida: {output_path}")
-        print(f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Modo: Verbose (detallado)")
+        safe_print(f"Salida: {output_path}")
+        safe_print(f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        safe_print(f"Modo: Verbose (detallado)")
     else:
-        print(f"Modo: Simple (use -v para detalles)")
+        safe_print(f"Modo: Simple (use -v para detalles)")
     
     try:
         with open(args.email_file, 'rb') as f:
             msg_bytes = f.read()
         if args.verbose:
-            print(f"Tamaño del archivo: {len(msg_bytes)} bytes")
+            safe_print(f"Tamaño del archivo: {len(msg_bytes)} bytes")
     except FileNotFoundError:
-        print(f"✗ Error: El archivo '{args.email_file}' no fue encontrado.", file=sys.stderr)
+        safe_print(f"✗ Error: El archivo '{args.email_file}' no fue encontrado.", file=sys.stderr)
         if output_file:
             output_file.close()
             sys.stdout = original_stdout
         sys.exit(1)
     except Exception as e:
-        print(f"✗ Error al leer el archivo: {e}", file=sys.stderr)
+        safe_print(f"✗ Error al leer el archivo: {e}", file=sys.stderr)
         if output_file:
             output_file.close()
             sys.stdout = original_stdout
@@ -405,40 +427,40 @@ def main():
 
     # Análisis inicial del mensaje
     if args.verbose:
-        print("\n" + "=" * 60)
-        print("ANÁLISIS INICIAL DEL MENSAJE")
-        print("=" * 60)
+        safe_print("\n" + "=" * 60)
+        safe_print("ANÁLISIS INICIAL DEL MENSAJE")
+        safe_print("=" * 60)
     
     msg = email.message_from_bytes(msg_bytes)
     
     # Información básica del mensaje
-    print(f"\nFrom: {msg.get('From', 'No especificado')}")
-    print(f"To: {msg.get('To', 'No especificado')}")
-    print(f"Subject: {msg.get('Subject', 'No especificado')}")
-    print(f"Date: {msg.get('Date', 'No especificado')}")
-    print(f"Message-ID: {msg.get('Message-ID', 'No especificado')}")
+    safe_print(f"\nFrom: {msg.get('From', 'No especificado')}")
+    safe_print(f"To: {msg.get('To', 'No especificado')}")
+    safe_print(f"Subject: {msg.get('Subject', 'No especificado')}")
+    safe_print(f"Date: {msg.get('Date', 'No especificado')}")
+    safe_print(f"Message-ID: {msg.get('Message-ID', 'No especificado')}")
     
     # Verificar presencia de cabeceras de autenticación
     has_arc_seal = 'ARC-Seal' in msg
     has_dkim_signature = 'DKIM-Signature' in msg
     has_received = 'Received' in msg
     
-    print(f"\nCabeceras de autenticación:")
+    safe_print(f"\nCabeceras de autenticación:")
     if args.verbose:
-        print(f"  ARC-Seal: {'✓ Sí' if has_arc_seal else '✗ No'}")
-        print(f"  DKIM-Signature: {'✓ Sí' if has_dkim_signature else '✗ No'}")
-        print(f"  Received (para SPF): {'✓ Sí' if has_received else '✗ No'}")
+        safe_print(f"  ARC-Seal: {'✓ Sí' if has_arc_seal else '✗ No'}")
+        safe_print(f"  DKIM-Signature: {'✓ Sí' if has_dkim_signature else '✗ No'}")
+        safe_print(f"  Received (para SPF): {'✓ Sí' if has_received else '✗ No'}")
         
         # Mostrar otras cabeceras de autenticación relevantes
         auth_headers = ['Authentication-Results', 'Received-SPF', 'DMARC-Filter']
         for header in auth_headers:
             if header in msg:
                 values = msg.get_all(header)
-                print(f"  {header}: ✓ Sí ({len(values)} encontrada(s))")
+                safe_print(f"  {header}: ✓ Sí ({len(values)} encontrada(s))")
                 for i, value in enumerate(values, 1):
-                    print(f"    #{i}: {value[:100]}{'...' if len(value) > 100 else ''}")
+                    safe_print(f"    #{i}: {value[:100]}{'...' if len(value) > 100 else ''}")
             else:
-                print(f"  {header}: ✗ No")
+                safe_print(f"  {header}: ✗ No")
     else:
         signatures = []
         if has_arc_seal:
@@ -448,9 +470,9 @@ def main():
         if has_received:
             signatures.append("SPF (disponible)")
         if signatures:
-            print(f"  Encontradas: {', '.join(signatures)}")
+            safe_print(f"  Encontradas: {', '.join(signatures)}")
         else:
-            print(f"  Ninguna firma encontrada")
+            safe_print(f"  Ninguna firma encontrada")
 
     verified = False
     verification_method = ""
@@ -458,24 +480,24 @@ def main():
     # Proceso de verificación
     if has_arc_seal:
         if args.verbose:
-            print(f"\n{'='*20} INICIANDO VERIFICACIÓN ARC {'='*20}")
+            safe_print(f"\n{'='*20} INICIANDO VERIFICACIÓN ARC {'='*20}")
         else:
-            print(f"\nVerificando ARC...")
+            safe_print(f"\nVerificando ARC...")
         if verify_arc(msg_bytes, args.verbose):
             verified = True
             verification_method = "ARC"
         else:
             if args.verbose:
-                print("\n⚠ La verificación ARC falló. Intentando con DKIM si existe...")
+                safe_print("\n⚠ La verificación ARC falló. Intentando con DKIM si existe...")
     
     if not verified and has_dkim_signature:
         if args.verbose:
             if has_arc_seal:
-                print(f"\n{'='*20} INICIANDO VERIFICACIÓN DKIM (FALLBACK) {'='*20}")
+                safe_print(f"\n{'='*20} INICIANDO VERIFICACIÓN DKIM (FALLBACK) {'='*20}")
             else:
-                print(f"\n{'='*20} INICIANDO VERIFICACIÓN DKIM {'='*20}")
+                safe_print(f"\n{'='*20} INICIANDO VERIFICACIÓN DKIM {'='*20}")
         else:
-            print(f"\nVerificando DKIM...")
+            safe_print(f"\nVerificando DKIM...")
         if verify_dkim(msg_bytes, args.verbose):
             verified = True
             verification_method = "DKIM"
@@ -483,9 +505,9 @@ def main():
     # Verificar SPF si está disponible
     if SPF_AVAILABLE and has_received:
         if args.verbose:
-            print(f"\n{'='*20} VERIFICACIÓN SPF {'='*20}")
+            safe_print(f"\n{'='*20} VERIFICACIÓN SPF {'='*20}")
         else:
-            print(f"\nVerificando SPF...")
+            safe_print(f"\nVerificando SPF...")
         spf_result = verify_spf(msg_bytes, args.verbose)
         if spf_result and not verified:
             verified = True
@@ -495,49 +517,49 @@ def main():
     
     if not has_arc_seal and not has_dkim_signature:
         if args.verbose:
-            print(f"\n{'='*20} SIN FIRMAS ENCONTRADAS {'='*20}")
-        print("✗ No se encontraron cabeceras 'ARC-Seal' ni 'DKIM-Signature' en el correo.")
+            safe_print(f"\n{'='*20} SIN FIRMAS ENCONTRADAS {'='*20}")
+        safe_print("✗ No se encontraron cabeceras 'ARC-Seal' ni 'DKIM-Signature' en el correo.")
         if args.verbose:
-            print("  El mensaje no tiene firmas digitales para verificar.")
+            safe_print("  El mensaje no tiene firmas digitales para verificar.")
 
     # Resultado final
     if args.verbose:
-        print("\n" + "=" * 80)
-        print("RESULTADO FINAL")
-        print("=" * 80)
+        safe_print("\n" + "=" * 80)
+        safe_print("RESULTADO FINAL")
+        safe_print("=" * 80)
     else:
-        print("\n" + "=" * 60)
+        safe_print("\n" + "=" * 60)
     
     if verified:
-        print(f"✓ SUCCESS: El correo ha sido verificado exitosamente usando {verification_method}.")
+        safe_print(f"✓ SUCCESS: El correo ha sido verificado exitosamente usando {verification_method}.")
         if args.verbose:
-            print(f"  El mensaje es auténtico y no ha sido alterado.")
+            safe_print(f"  El mensaje es auténtico y no ha sido alterado.")
     else:
-        print("✗ FAIL: No se pudo verificar el correo.")
+        safe_print("✗ FAIL: No se pudo verificar el correo.")
         if args.verbose:
             if has_arc_seal or has_dkim_signature:
-                print("  El mensaje tiene firmas pero no pudieron ser validadas.")
-                print("  Posibles causas:")
-                print("  - Las firmas están corruptas o malformadas")
-                print("  - No se pueden obtener las claves públicas del DNS")
-                print("  - El mensaje ha sido modificado después de ser firmado")
-                print("  - Problemas de conectividad con los servidores DNS")
+                safe_print("  El mensaje tiene firmas pero no pudieron ser validadas.")
+                safe_print("  Posibles causas:")
+                safe_print("  - Las firmas están corruptas o malformadas")
+                safe_print("  - No se pueden obtener las claves públicas del DNS")
+                safe_print("  - El mensaje ha sido modificado después de ser firmado")
+                safe_print("  - Problemas de conectividad con los servidores DNS")
             else:
-                print("  El mensaje no contiene firmas digitales para verificar.")
+                safe_print("  El mensaje no contiene firmas digitales para verificar.")
     
     if args.verbose:
-        print("=" * 80)
+        safe_print("=" * 80)
     else:
-        print("=" * 60)
+        safe_print("=" * 60)
     
     # Cerrar archivo de salida y restaurar stdout
     if output_file:
         sys.stdout = original_stdout
         output_file.close()
         if args.verbose:
-            print(f"\n✓ Resultados guardados en: {output_path}")
+            safe_print(f"\n✓ Resultados guardados en: {output_path}")
         else:
-            print(f"\nResultados guardados en: {output_filename}")
+            safe_print(f"\nResultados guardados en: {output_filename}")
 
 
 if __name__ == "__main__":

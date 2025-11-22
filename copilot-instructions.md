@@ -1,0 +1,11 @@
+1) Genera export_email.py un script de Python que permita exportar correos electrónicos desde archivos .eml a PDF. El escript debe usar check_dkim.py para verificar la autenticidad del correo antes de la exportación. El script debe incluir las siguientes características:
+- Verificación DKIM/ARC usando check_dkim.py
+- Opción de exportación a PDF solo si la verificación es exitosa o exportar con advertencia si falla.
+- Soporte para procesar múltiples archivos .eml en un solo lote. El script debe aceptar una carpeta como entrada y procesar todos los archivos .eml dentro de ella. Se debe generar un unico archivo PDF que contenga todos los correos procesados.
+- Formato de PDF legible con encabezados, cuerpo del mensaje y verificación. El encabezado debe incluir un campo de titulo introducido por el usuario, numero secuencial de correo dentro del lote, numero de pagina y total de paginas del lote, remitente, asunto, fecha. Paginación en el pie de página (número de página y total de páginas de ese correo). En la primera página de cada correo, debe incluirse un resumen de la verificación DKIM/ARC (éxito o fallo con detalles).
+- Registro de resultados de verificación de todos los correos en un archivo de texto. El archivo de registro debe incluir el nombre del archivo .eml, cabeceras del mensaje (remitente, destinatario, asunto, fecha) , estado de verificación (éxito o fallo), y cualquier advertencia o error encontrado durante la verificación.
+- Soporte para modo verbose opcional que incluya detalles adicionales en el archivo de registro.
+- Opción de que la salida sea un PDF por cada correo en lugar de un único PDF con todos los correos.
+
+2) Genera export_email.md un archivo de instrucciones en español para el uso de export_email.py.
+3) Genera export_email_gui.py un script de Python que implemente una interfaz gráfica de usuario (GUI) para export_email.py usando Tkinter. La GUI debe permitir a los usuarios seleccionar una carpeta de entrada, elegir entre generar un único PDF o múltiples PDFs, ingresar un título para los encabezados, activar el modo verbose y ejecutar el proceso de exportación con botones claros. La GUI también debe mostrar mensajes de estado y resultados al usuario durante y después del proceso de exportación.
