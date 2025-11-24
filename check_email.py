@@ -29,17 +29,19 @@ def safe_print(*args, **kwargs):
             safe_args.append(arg)
         print(*safe_args, **kwargs)
 
-try:
-    import spf
-    SPF_AVAILABLE = True
-except ImportError:
-    SPF_AVAILABLE = False
-    safe_print("⚠ Advertencia: Biblioteca 'pyspf' no instalada. La verificación SPF no estará disponible.")
-    safe_print("  Instale con: pip install pyspf")
+
 
 
 def verify_arc(msg_bytes, verbose=False):
-    """Verifica la firma ARC de un mensaje."""
+    """
+    Verifica la firma ARC de un mensaje.
+    
+    En modo verbose, captura información detallada del proceso de verificación
+    utilizando el logger interno de dkim.arc_verify(), incluyendo:
+    - Parámetros de las firmas ARC parseados
+    - Validación de la cadena ARC
+    - Errores específicos con tipos de excepción detallados
+    """
     safe_print("=" * 60)
     safe_print("VERIFICACIÓN ARC")
     safe_print("=" * 60)
@@ -72,9 +74,29 @@ def verify_arc(msg_bytes, verbose=False):
         if verbose:
             safe_print("\nIntentando verificación automática de ARC...")
         
+        # Configurar logger para capturar información detallada en modo verbose
+        arc_logger = None
+        log_stream = None
+        if verbose:
+            import logging
+            import io
+            
+            # Crear un logger específico para ARC
+            arc_logger = logging.getLogger('arc_verify')
+            arc_logger.setLevel(logging.DEBUG)
+            arc_logger.handlers = []  # Limpiar handlers previos
+            
+            # Crear un handler que capture los logs en memoria
+            log_stream = io.StringIO()
+            handler = logging.StreamHandler(log_stream)
+            handler.setLevel(logging.DEBUG)
+            formatter = logging.Formatter('%(message)s')
+            handler.setFormatter(formatter)
+            arc_logger.addHandler(handler)
+        
         # Método 1: Intentar con arc_verify directamente del módulo dkim
         try:
-            result = dkim.arc_verify(msg_bytes)
+            result = dkim.arc_verify(msg_bytes, logger=arc_logger if verbose else None)
             
             # arc_verify devuelve una tupla de 3 elementos:
             # (CV Result, lista de diccionarios de resultados, razón del resultado)
@@ -105,12 +127,81 @@ def verify_arc(msg_bytes, verbose=False):
                         return True
                     elif cv_result == CV_Fail:
                         safe_print("✗ Verificación ARC falló (CV_Fail).")
+                        
+                        # Mostrar logs capturados solo cuando falla y está en modo verbose
+                        if verbose and arc_logger:
+                            log_output = log_stream.getvalue()
+                            if log_output.strip():
+                                safe_print("\n  Información detallada de dkim.arc_verify():")
+                                
+                                # Analizar mensajes de error específicos del logger
+                                error_analysis = []
+                                for line in log_output.strip().split('\n'):
+                                    safe_print(f"    {line}")
+                                    
+                                    # Detectar errores específicos
+                                    if 'body hash mismatch' in line.lower():
+                                        error_analysis.append("    → El cuerpo del mensaje fue modificado después de la firma")
+                                    elif 'x= value is past' in line.lower():
+                                        error_analysis.append("    → La firma ha expirado (parámetro x=)")
+                                    elif 'could not parse rsa public key' in line.lower():
+                                        error_analysis.append("    → La clave pública DKIM no tiene el formato correcto")
+                                    elif "'dkim-signature' valid: false" in line.lower() or "b'dkim-signature' valid: false" in line.lower():
+                                        error_analysis.append("    → La firma DKIM no tiene el formato correcto")
+                                    elif "'arc-" in line.lower() and "valid: false" in line.lower():
+                                        error_analysis.append("    → La firma ARC no tiene el formato correcto")
+                                    elif 'signature verification failed' in line.lower() or 'valid: false' in line.lower():
+                                        error_analysis.append("    → La verificación criptográfica de la firma falló")
+                                    elif 'dns' in line.lower() and ('timeout' in line.lower() or 'error' in line.lower()):
+                                        error_analysis.append("    → Error al consultar el DNS para obtener la clave pública")
+                                    elif 'key' in line.lower() and 'not found' in line.lower():
+                                        error_analysis.append("    → La clave pública no se encuentra en el DNS")
+                                    elif 'chain' in line.lower() and ('broken' in line.lower() or 'invalid' in line.lower()):
+                                        error_analysis.append("    → La cadena ARC está rota o es inválida")
+                                
+                                # Mostrar análisis de errores detectados
+                                if error_analysis:
+                                    safe_print("\n  Causas específicas detectadas:")
+                                    for analysis in error_analysis:
+                                        safe_print(analysis)
+                        
                         return False
                     elif cv_result == CV_None:
                         safe_print("⚠ Verificación ARC no concluyente (CV_None).")
+                        
+                        # Mostrar logs capturados solo cuando falla y está en modo verbose
+                        if verbose and arc_logger:
+                            log_output = log_stream.getvalue()
+                            if log_output.strip():
+                                safe_print("\n  Información detallada de dkim.arc_verify():")
+                                
+                                # Analizar mensajes de error específicos del logger
+                                error_analysis = []
+                                for line in log_output.strip().split('\n'):
+                                    safe_print(f"    {line}")
+                                    
+                                    # Detectar errores específicos
+                                    if 'no arc' in line.lower() or 'missing arc' in line.lower():
+                                        error_analysis.append("    → No hay suficientes cabeceras ARC para validar")
+                                
+                                # Mostrar análisis de errores detectados
+                                if error_analysis:
+                                    safe_print("\n  Causas específicas detectadas:")
+                                    for analysis in error_analysis:
+                                        safe_print(analysis)
+                        
                         return False
                     else:
                         safe_print(f"? Resultado ARC desconocido: {cv_result}")
+                        
+                        # Mostrar logs capturados
+                        if verbose and arc_logger:
+                            log_output = log_stream.getvalue()
+                            if log_output.strip():
+                                safe_print("\n  Información detallada de dkim.arc_verify():")
+                                for line in log_output.strip().split('\n'):
+                                    safe_print(f"    {line}")
+                        
                         return False
                 except ImportError:
                     # Si no se pueden importar las constantes, usar comparación de strings
@@ -120,16 +211,52 @@ def verify_arc(msg_bytes, verbose=False):
                         return True
                     elif 'fail' in cv_str:
                         safe_print("✗ Verificación ARC falló.")
+                        
+                        # Mostrar logs capturados solo cuando falla y está en modo verbose
+                        if verbose and arc_logger:
+                            log_output = log_stream.getvalue()
+                            if log_output.strip():
+                                safe_print("\n  Información detallada de dkim.arc_verify():")
+                                for line in log_output.strip().split('\n'):
+                                    safe_print(f"    {line}")
+                        
                         return False
                     elif 'none' in cv_str:
                         safe_print("⚠ Verificación ARC no concluyente.")
+                        
+                        # Mostrar logs capturados solo cuando falla y está en modo verbose
+                        if verbose and arc_logger:
+                            log_output = log_stream.getvalue()
+                            if log_output.strip():
+                                safe_print("\n  Información detallada de dkim.arc_verify():")
+                                for line in log_output.strip().split('\n'):
+                                    safe_print(f"    {line}")
+                        
                         return False
                     else:
                         safe_print(f"? Resultado ARC desconocido: {cv_result}")
+                        
+                        # Mostrar logs capturados
+                        if verbose and arc_logger:
+                            log_output = log_stream.getvalue()
+                            if log_output.strip():
+                                safe_print("\n  Información detallada de dkim.arc_verify():")
+                                for line in log_output.strip().split('\n'):
+                                    safe_print(f"    {line}")
+                        
                         return False
             else:
                 if verbose:
                     safe_print(f"  Formato inesperado: {type(result)} = {result}")
+                
+                # Mostrar logs capturados
+                if verbose and arc_logger:
+                    log_output = log_stream.getvalue()
+                    if log_output.strip():
+                        safe_print("\n  Información detallada de dkim.arc_verify():")
+                        for line in log_output.strip().split('\n'):
+                            safe_print(f"    {line}")
+                
                 # Fallback: evaluar como booleano
                 if result:
                     safe_print("✓ Verificación ARC exitosa.")
@@ -162,7 +289,16 @@ def verify_arc(msg_bytes, verbose=False):
         return False
 
 def verify_dkim(msg_bytes, verbose=False):
-    """Verifica la firma DKIM de un mensaje."""
+    """
+    Verifica la firma DKIM de un mensaje.
+    
+    En modo verbose, captura información detallada del proceso de verificación
+    utilizando el logger interno de dkim.verify(), incluyendo:
+    - Parámetros de la firma parseados
+    - Validación del hash del cuerpo (bh)
+    - Consultas DNS para claves públicas
+    - Errores específicos con tipos de excepción detallados
+    """
     safe_print("=" * 60)
     safe_print("VERIFICACIÓN DKIM")
     safe_print("=" * 60)
@@ -202,8 +338,27 @@ def verify_dkim(msg_bytes, verbose=False):
         else:
             safe_print(f"Cabeceras encontradas: {len(dkim_signatures)} DKIM-Signature")
         
-        # Realizar verificación DKIM
-        result = dkim.verify(msg_bytes)
+        # Configurar logger para capturar información detallada en modo verbose
+        dkim_logger = None
+        if verbose:
+            import logging
+            import io
+            
+            # Crear un logger específico para DKIM
+            dkim_logger = logging.getLogger('dkim_verify')
+            dkim_logger.setLevel(logging.DEBUG)
+            dkim_logger.handlers = []  # Limpiar handlers previos
+            
+            # Crear un handler que capture los logs en memoria
+            log_stream = io.StringIO()
+            handler = logging.StreamHandler(log_stream)
+            handler.setLevel(logging.DEBUG)
+            formatter = logging.Formatter('%(message)s')
+            handler.setFormatter(formatter)
+            dkim_logger.addHandler(handler)
+        
+        # Realizar verificación DKIM con logger si está en modo verbose
+        result = dkim.verify(msg_bytes, logger=dkim_logger if verbose else None)
         
         if result:
             safe_print("✓ Verificación DKIM exitosa.")
@@ -218,8 +373,70 @@ def verify_dkim(msg_bytes, verbose=False):
                 safe_print("  - La clave pública no se puede obtener del DNS")
                 safe_print("  - La firma está malformada")
                 safe_print("  - El selector o dominio son incorrectos")
+                 # Intentar obtener más detalles del fallo
+                safe_print("\n  Análisis detallado del fallo:")
+            
+            # Mostrar logs capturados solo cuando falla y está en modo verbose
+            if verbose and dkim_logger:
+                log_output = log_stream.getvalue()
+                if log_output.strip():
+                    safe_print("\n  Información detallada de dkim.verify():")
+                    
+                    # Analizar mensajes de error específicos del logger
+                    error_analysis = []
+                    for line in log_output.strip().split('\n'):
+                        safe_print(f"    {line}")
+                        
+                        # Detectar errores específicos
+                        if 'body hash mismatch' in line.lower():
+                            error_analysis.append("    → El cuerpo del mensaje fue modificado después de la firma")
+                        elif 'x= value is past' in line.lower():
+                            error_analysis.append("    → La firma ha expirado (parámetro x=)")
+                        elif 'could not parse rsa public key' in line.lower():
+                            error_analysis.append("    → La clave pública DKIM no tiene el formato correcto")
+                        elif "'dkim-signature' valid: false" in line.lower() or "b'dkim-signature' valid: false" in line.lower():
+                            error_analysis.append("    → La firma DKIM no tiene el formato correcto")
+                        elif 'signature verification failed' in line.lower():
+                            error_analysis.append("    → La verificación criptográfica de la firma falló")
+                        elif 'dns' in line.lower() and ('timeout' in line.lower() or 'error' in line.lower()):
+                            error_analysis.append("    → Error al consultar el DNS para obtener la clave pública")
+                        elif 'key' in line.lower() and 'not found' in line.lower():
+                            error_analysis.append("    → La clave pública no se encuentra en el DNS")
+                    
+                    # Mostrar análisis de errores detectados
+                    if error_analysis:
+                        safe_print("\n  Causas específicas detectadas:")
+                        for analysis in error_analysis:
+                            safe_print(analysis)
+            
+            
             return False
             
+    except dkim.KeyFormatError as e:
+        safe_print(f"✗ Error de formato de clave DKIM: {e}", file=sys.stderr)
+        if verbose:
+            safe_print("  La clave pública DKIM tiene un formato inválido.")
+        return False
+    except dkim.MessageFormatError as e:
+        safe_print(f"✗ Error de formato del mensaje: {e}", file=sys.stderr)
+        if verbose:
+            safe_print("  El mensaje no tiene el formato RFC822 esperado.")
+        return False
+    except dkim.ParameterError as e:
+        safe_print(f"✗ Error en parámetros DKIM: {e}", file=sys.stderr)
+        if verbose:
+            safe_print("  Los parámetros de la firma DKIM son inválidos.")
+        return False
+    except dkim.DnsTimeoutError as e:
+        safe_print(f"✗ Timeout en consulta DNS: {e}", file=sys.stderr)
+        if verbose:
+            safe_print("  No se pudo obtener la clave pública del DNS (timeout).")
+        return False
+    except dkim.ValidationError as e:
+        safe_print(f"✗ Error de validación DKIM: {e}", file=sys.stderr)
+        if verbose:
+            safe_print("  Error al validar la firma DKIM.")
+        return False
     except dkim.DKIMException as e:
         safe_print(f"✗ Excepción DKIM: {e}", file=sys.stderr)
         if verbose:
@@ -229,125 +446,7 @@ def verify_dkim(msg_bytes, verbose=False):
         safe_print(f"✗ Error general en la verificación DKIM: {e}", file=sys.stderr)
         return False
 
-def verify_spf(msg_bytes, verbose=False):
-    """Verifica el registro SPF de un mensaje."""
-    safe_print("=" * 60)
-    safe_print("VERIFICACIÓN SPF")
-    safe_print("=" * 60)
-    
-    if not SPF_AVAILABLE:
-        safe_print("✗ La biblioteca pyspf no está instalada.")
-        safe_print("  Instale con: pip install pyspf")
-        return False
-    
-    try:
-        # Parse del mensaje
-        msg = email.message_from_bytes(msg_bytes)
-        
-        # Obtener información necesaria para SPF
-        # Extraer IP del remitente del header Received
-        received_headers = msg.get_all('Received') or []
-        sender_ip = None
-        
-        if verbose:
-            safe_print(f"Cabeceras Received encontradas: {len(received_headers)}")
-        
-        # Buscar la IP en las cabeceras Received (usualmente en la primera)
-        for received in received_headers:
-            # Buscar patrones de IP
-            ip_pattern = r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b'
-            ips = re.findall(ip_pattern, received)
-            if ips:
-                # Tomar la última IP encontrada en el primer Received (generalmente es la del remitente)
-                sender_ip = ips[-1]
-                if verbose:
-                    safe_print(f"IP del remitente detectada: {sender_ip}")
-                break
-        
-        # Obtener el dominio del remitente
-        from_header = msg.get('From', '')
-        # Extraer email del formato "Name <email@domain.com>"
-        email_match = re.search(r'<(.+?)>', from_header)
-        if email_match:
-            sender_email = email_match.group(1)
-        else:
-            sender_email = from_header.strip()
-        
-        if '@' in sender_email:
-            sender_domain = sender_email.split('@')[1]
-        else:
-            safe_print("✗ No se pudo extraer el dominio del remitente.")
-            return False
-        
-        if verbose:
-            safe_print(f"Remitente: {sender_email}")
-            safe_print(f"Dominio: {sender_domain}")
-        
-        if not sender_ip:
-            safe_print("✗ No se pudo detectar la IP del remitente en las cabeceras Received.")
-            if verbose:
-                safe_print("  Nota: La verificación SPF requiere la IP del servidor remitente.")
-            return False
-        
-        # Verificar SPF
-        if verbose:
-            safe_print(f"\nVerificando SPF para IP {sender_ip} y dominio {sender_domain}...")
-        
-        # Realizar consulta SPF
-        result, explanation = spf.check2(i=sender_ip, s=sender_email, h=sender_domain)
-        
-        if verbose:
-            safe_print(f"Resultado SPF: {result}")
-            safe_print(f"Explicación: {explanation}")
-        
-        # Evaluar resultado
-        if result == 'pass':
-            safe_print("✓ Verificación SPF exitosa.")
-            if verbose:
-                safe_print("  El servidor está autorizado para enviar correos desde este dominio.")
-            return True
-        elif result == 'fail':
-            safe_print("✗ Verificación SPF falló.")
-            if verbose:
-                safe_print("  El servidor NO está autorizado para enviar correos desde este dominio.")
-                safe_print(f"  Detalles: {explanation}")
-            return False
-        elif result == 'softfail':
-            safe_print("⚠ Verificación SPF softfail.")
-            if verbose:
-                safe_print("  El servidor probablemente no está autorizado (política suave).")
-                safe_print(f"  Detalles: {explanation}")
-            return False
-        elif result == 'neutral':
-            safe_print("⚠ Verificación SPF neutral.")
-            if verbose:
-                safe_print("  El dominio no hace afirmaciones sobre la autorización.")
-            return False
-        elif result == 'none':
-            safe_print("⚠ Sin registro SPF.")
-            if verbose:
-                safe_print("  El dominio no tiene un registro SPF publicado.")
-            return False
-        elif result == 'temperror':
-            safe_print("⚠ Error temporal en verificación SPF.")
-            if verbose:
-                safe_print("  Error temporal al consultar el registro SPF.")
-            return False
-        elif result == 'permerror':
-            safe_print("✗ Error permanente en verificación SPF.")
-            if verbose:
-                safe_print("  El registro SPF contiene errores.")
-            return False
-        else:
-            safe_print(f"? Resultado SPF desconocido: {result}")
-            return False
-            
-    except Exception as e:
-        safe_print(f"✗ Error en la verificación SPF: {e}", file=sys.stderr)
-        if verbose:
-            import traceback
-            traceback.print_exc()
-        return False
+
 
 def main():
     """
@@ -355,7 +454,7 @@ def main():
     Busca y verifica primero la firma ARC. Si no existe, busca y verifica la firma DKIM.
     """
     parser = argparse.ArgumentParser(
-        description="Verifica las firmas DKIM, ARC y SPF de un correo electrónico desde un archivo."
+        description="Verifica las firmas DKIM y ARC de un correo electrónico desde un archivo."
     )
     parser.add_argument(
         "email_file", help="Ruta al archivo que contiene el correo electrónico."
@@ -397,7 +496,7 @@ def main():
         original_stdout = None
 
     safe_print("=" * 80)
-    safe_print("VERIFICADOR DE AUTENTICACIÓN DE EMAIL (DKIM/ARC/SPF)")
+    safe_print("VERIFICADOR DE AUTENTICACIÓN DE EMAIL (DKIM/ARC)")
     safe_print("=" * 80)
     safe_print(f"Archivo: {args.email_file}")
     if args.verbose:
@@ -443,13 +542,11 @@ def main():
     # Verificar presencia de cabeceras de autenticación
     has_arc_seal = 'ARC-Seal' in msg
     has_dkim_signature = 'DKIM-Signature' in msg
-    has_received = 'Received' in msg
     
     safe_print(f"\nCabeceras de autenticación:")
     if args.verbose:
         safe_print(f"  ARC-Seal: {'✓ Sí' if has_arc_seal else '✗ No'}")
         safe_print(f"  DKIM-Signature: {'✓ Sí' if has_dkim_signature else '✗ No'}")
-        safe_print(f"  Received (para SPF): {'✓ Sí' if has_received else '✗ No'}")
         
         # Mostrar otras cabeceras de autenticación relevantes
         auth_headers = ['Authentication-Results', 'Received-SPF', 'DMARC-Filter']
@@ -467,8 +564,6 @@ def main():
             signatures.append("ARC")
         if has_dkim_signature:
             signatures.append("DKIM")
-        if has_received:
-            signatures.append("SPF (disponible)")
         if signatures:
             safe_print(f"  Encontradas: {', '.join(signatures)}")
         else:
@@ -501,19 +596,6 @@ def main():
         if verify_dkim(msg_bytes, args.verbose):
             verified = True
             verification_method = "DKIM"
-    
-    # Verificar SPF si está disponible
-    if SPF_AVAILABLE and has_received:
-        if args.verbose:
-            safe_print(f"\n{'='*20} VERIFICACIÓN SPF {'='*20}")
-        else:
-            safe_print(f"\nVerificando SPF...")
-        spf_result = verify_spf(msg_bytes, args.verbose)
-        if spf_result and not verified:
-            verified = True
-            verification_method = "SPF"
-        elif spf_result and verified:
-            verification_method += "+SPF"
     
     if not has_arc_seal and not has_dkim_signature:
         if args.verbose:

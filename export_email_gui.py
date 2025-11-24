@@ -43,8 +43,8 @@ class ExportEmailGUI:
         self.title_text = tk.StringVar(value="Correos Electrónicos")
         self.log_path = tk.StringVar()
         self.separate_pdf = tk.BooleanVar(value=False)
-        self.force_export = tk.BooleanVar(value=False)
-        self.verbose_mode = tk.BooleanVar(value=False)
+        self.force_export = tk.BooleanVar(value=True)
+        self.verbose_mode = tk.BooleanVar(value=True)
         self.processing = False
         
         # Verificar que export_email.py existe
