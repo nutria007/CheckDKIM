@@ -43,7 +43,7 @@ try:
     from reportlab.lib.pagesizes import letter, A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle, Flowable
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
     from reportlab.pdfgen import canvas
@@ -170,6 +170,20 @@ class EmailVerifier:
             
         except Exception as e:
             return False, f"Error al verificar: {str(e)}", {"success": False, "error": str(e)}
+
+
+class EmailMarker(Flowable):
+    """Flowable invisible para marcar el inicio de un email en el story"""
+    def __init__(self, email_index, email_data):
+        Flowable.__init__(self)
+        self.email_index = email_index
+        self.email_data = email_data
+        self.width = 0
+        self.height = 0
+    
+    def draw(self):
+        # No dibuja nada, solo marca la posición
+        pass
 
 
 class PDFEmailExporter:
@@ -611,6 +625,7 @@ class PDFEmailExporter:
         raw_headers = {
             'from': self._decode_header(msg.get('From', 'N/A')),
             'to': self._decode_header(msg.get('To', 'N/A')),
+            'cc': self._decode_header(msg.get('Cc', '')),
             'subject': self._decode_header(msg.get('Subject', 'N/A')),
             'date': self._format_date_spanish(msg.get('Date', 'N/A')),
             'message_id': msg.get('Message-ID', 'N/A')
@@ -620,6 +635,7 @@ class PDFEmailExporter:
         email_headers = {
             'from': self._sanitize_text(raw_headers['from']),
             'to': self._sanitize_text(raw_headers['to']),
+            'cc': self._sanitize_text(raw_headers['cc']),
             'subject': self._sanitize_text(raw_headers['subject']),
             'date': self._sanitize_text(raw_headers['date']),
             'message_id': self._sanitize_text(raw_headers['message_id'])
@@ -689,10 +705,17 @@ class PDFEmailExporter:
         data = [
             [Paragraph('<b>De:</b>', self.styles['Normal']), Paragraph(email_headers['from'], cell_style)],
             [Paragraph('<b>Para:</b>', self.styles['Normal']), Paragraph(email_headers['to'], cell_style)],
+        ]
+        
+        # Solo agregar CC si existe
+        if email_headers['cc']:
+            data.append([Paragraph('<b>CC:</b>', self.styles['Normal']), Paragraph(email_headers['cc'], cell_style)])
+        
+        data.extend([
             [Paragraph('<b>Asunto:</b>', self.styles['Normal']), Paragraph(email_headers['subject'], cell_style)],
             [Paragraph('<b>Fecha:</b>', self.styles['Normal']), Paragraph(email_headers['date'], cell_style)],
             [Paragraph('<b>Message-ID:</b>', self.styles['Normal']), Paragraph(email_headers['message_id'], cell_style)]
-        ]
+        ])
         
         table = Table(data, colWidths=[1.2*inch, 5*inch])
         table.setStyle(TableStyle([
@@ -830,6 +853,7 @@ class PDFEmailExporter:
             raw_headers = {
                 'from': self._decode_header(msg.get('From', 'N/A')),
                 'to': self._decode_header(msg.get('To', 'N/A')),
+                'cc': self._decode_header(msg.get('Cc', '')),
                 'subject': self._decode_header(msg.get('Subject', 'N/A')),
                 'date': self._format_date_spanish(msg.get('Date', 'N/A')),
                 'message_id': msg.get('Message-ID', 'N/A')
@@ -839,6 +863,7 @@ class PDFEmailExporter:
             email_headers = {
                 'from': self._sanitize_text(raw_headers['from']),
                 'to': self._sanitize_text(raw_headers['to']),
+                'cc': self._sanitize_text(raw_headers['cc']),
                 'subject': self._sanitize_text(raw_headers['subject']),
                 'date': self._sanitize_text(raw_headers['date']),
                 'message_id': self._sanitize_text(raw_headers['message_id'])
@@ -851,9 +876,15 @@ class PDFEmailExporter:
             # Agregar a la lista de correos incluidos en el PDF
             included_results.append(details)
             
-            # Agregar contenido al PDF
+            # Marcar el inicio de este email en el story ANTES del PageBreak
+            # para que la primera página del nuevo email tenga el marcador correcto
             if len(included_results) > 1:
+                # Agregar el marcador antes del page break
+                story.append(EmailMarker(len(included_results) - 1, {'headers': email_headers, 'raw_headers': raw_headers}))
                 story.append(PageBreak())
+            else:
+                # Para el primer email, solo agregamos el marcador
+                story.append(EmailMarker(len(included_results) - 1, {'headers': email_headers, 'raw_headers': raw_headers}))
             
             # Número de correo
             story.append(Paragraph(
@@ -918,10 +949,17 @@ class PDFEmailExporter:
             data = [
                 [Paragraph('<b>De:</b>', self.styles['Normal']), Paragraph(email_headers['from'], cell_style)],
                 [Paragraph('<b>Para:</b>', self.styles['Normal']), Paragraph(email_headers['to'], cell_style)],
+            ]
+            
+            # Solo agregar CC si existe
+            if email_headers['cc']:
+                data.append([Paragraph('<b>CC:</b>', self.styles['Normal']), Paragraph(email_headers['cc'], cell_style)])
+            
+            data.extend([
                 [Paragraph('<b>Asunto:</b>', self.styles['Normal']), Paragraph(email_headers['subject'], cell_style)],
                 [Paragraph('<b>Fecha:</b>', self.styles['Normal']), Paragraph(email_headers['date'], cell_style)],
                 [Paragraph('<b>Message-ID:</b>', self.styles['Normal']), Paragraph(email_headers['message_id'], cell_style)]
-            ]
+            ])
             
             table = Table(data, colWidths=[1.2*inch, 5*inch])
             table.setStyle(TableStyle([
@@ -1021,28 +1059,22 @@ class PDFEmailExporter:
             bottomMargin=inch
         )
         
-        # Rastrear en qué correo estamos basándonos en aproximaciones
-        page_info = {'last_page': 0, 'current_email': 0, 'pages_in_email': 0}
+        # Rastrear en qué correo estamos usando una estrategia más directa
+        # Guardamos el índice del email actual que se actualiza cuando procesamos EmailMarker
+        current_email = [0]  # Usamos lista para que sea mutable en el closure
         
-        # Estimar páginas por correo (distribución aproximada)
-        num_emails = len(included_results)
-        estimated_total_pages = max(num_emails, len(story) // 20)  # Estimación gruesa
-        pages_per_email_estimate = max(1, estimated_total_pages // num_emails)
+        # Hook personalizado para EmailMarker
+        original_EmailMarker_draw = EmailMarker.draw
+        def tracked_draw(self):
+            current_email[0] = self.email_index
+            return original_EmailMarker_draw(self)
+        
+        # Parchear temporalmente el método draw
+        EmailMarker.draw = tracked_draw
         
         def page_template(canvas_obj, doc_obj):
-            # Si la página aumentó, verificar si debemos cambiar de correo
-            if doc_obj.page > page_info['last_page']:
-                page_info['pages_in_email'] += 1
-                page_info['last_page'] = doc_obj.page
-                
-                # Cambiar al siguiente correo si hemos pasado suficientes páginas
-                # y no estamos en el último correo
-                if (page_info['pages_in_email'] > pages_per_email_estimate and 
-                    page_info['current_email'] < num_emails - 1):
-                    page_info['current_email'] += 1
-                    page_info['pages_in_email'] = 1
-            
-            email_idx = min(page_info['current_email'], len(included_results) - 1)
+            # Usar el índice del email actual
+            email_idx = min(current_email[0], len(included_results) - 1)
             
             if email_idx < len(included_results):
                 headers = included_results[email_idx].get('headers', {})
@@ -1051,7 +1083,11 @@ class PDFEmailExporter:
                 self._create_page_template(canvas_obj, doc_obj, email_idx + 1, len(included_results), 
                                          raw_headers, 1, 1, None)
         
-        doc.build(story, onFirstPage=page_template, onLaterPages=page_template)
+        try:
+            doc.build(story, onFirstPage=page_template, onLaterPages=page_template)
+        finally:
+            # Restaurar el método original
+            EmailMarker.draw = original_EmailMarker_draw
         
         safe_print(f"\n✓ PDF generado: {output_pdf}")
         return results
