@@ -45,6 +45,7 @@ class ExportEmailGUI:
         self.separate_pdf = tk.BooleanVar(value=False)
         self.force_export = tk.BooleanVar(value=True)
         self.verbose_mode = tk.BooleanVar(value=True)
+        self.no_verify_mode = tk.BooleanVar(value=False)
         self.processing = False
         
         # Verificar que export_email.py existe
@@ -153,6 +154,12 @@ class ExportEmailGUI:
             text="Modo verbose (registro detallado)",
             variable=self.verbose_mode
         ).grid(row=2, column=0, sticky=tk.W, pady=2)
+
+        ttk.Checkbutton(
+            options_frame,
+            text="Omitir verificación DKIM/ARC (--no-verify)",
+            variable=self.no_verify_mode
+        ).grid(row=3, column=0, sticky=tk.W, pady=2)
         
         row += 1
         
@@ -353,6 +360,7 @@ class ExportEmailGUI:
         self.separate_pdf.set(False)
         self.force_export.set(False)
         self.verbose_mode.set(False)
+        self.no_verify_mode.set(False)
         self.output_text.delete(1.0, tk.END)
         self.status_bar.config(text="Listo")
         self.toggle_separate_mode()
@@ -450,6 +458,9 @@ class ExportEmailGUI:
             
             if self.force_export.get():
                 cmd.append("--force")
+
+            if self.no_verify_mode.get():
+                cmd.append("--no-verify")
             
             if self.verbose_mode.get():
                 cmd.append("-v")

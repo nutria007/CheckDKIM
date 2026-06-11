@@ -12,12 +12,16 @@ import os
 import sys
 import subprocess
 import email
+import re
+import html as html_lib
 from email import policy
 from email.header import decode_header
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import io
 import locale
+import base64
+import tempfile
 
 # Configurar la codificación de salida para manejar Unicode en Windows
 if sys.platform == 'win32':
@@ -51,6 +55,17 @@ except ImportError:
     print("Error: Se requiere la biblioteca 'reportlab' para generar PDFs.")
     print("Instálela usando: pip install reportlab")
     sys.exit(1)
+
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:
+    sync_playwright = None
+
+try:
+    from pypdf import PdfReader, PdfWriter
+except ImportError:
+    PdfReader = None
+    PdfWriter = None
 
 
 class EmailVerifier:
@@ -189,10 +204,11 @@ class EmailMarker(Flowable):
 class PDFEmailExporter:
     """Clase para exportar correos a PDF"""
     
-    def __init__(self, title="Correos Electrónicos", verbose=False):
+    def __init__(self, title="Correos Electrónicos", verbose=False, verify_emails=True):
         self.title = title
         self.verbose = verbose
-        self.verifier = EmailVerifier(verbose)
+        self.verify_emails = verify_emails
+        self.verifier = EmailVerifier(verbose) if verify_emails else None
         self.styles = getSampleStyleSheet()
         self._setup_custom_styles()
         
@@ -317,6 +333,125 @@ class PDFEmailExporter:
         text = text.replace('<', '&lt;')
         text = text.replace('>', '&gt;')
         return text
+
+    def _html_to_text(self, html_content):
+        """Convierte HTML a texto legible para el PDF."""
+        if not html_content:
+            return ""
+
+        text = html_content
+        # Eliminar bloques ocultos comunes en preheaders de emails masivos.
+        text = re.sub(
+            r'(?is)<([a-z0-9]+)[^>]*style=["\'][^"\']*(display\s*:\s*none|mso-hide\s*:\s*all|max-height\s*:\s*0)[^"\']*["\'][^>]*>.*?</\1>',
+            ' ',
+            text
+        )
+        # Quitar bloques que no aportan contenido visible.
+        text = re.sub(r'(?is)<(script|style|head|title)[^>]*>.*?</\1>', ' ', text)
+        # Preservar saltos de línea para etiquetas de bloque frecuentes.
+        text = re.sub(r'(?i)<br\s*/?>', '\n', text)
+        text = re.sub(r'(?i)</(p|div|tr|li|h1|h2|h3|h4|h5|h6)>', '\n', text)
+        # Quitar etiquetas restantes.
+        text = re.sub(r'(?s)<[^>]+>', ' ', text)
+        # Convertir entidades HTML (&nbsp;, &amp;, etc.).
+        text = html_lib.unescape(text)
+        # Eliminar caracteres invisibles frecuentes en plantillas de email.
+        text = re.sub(r'[\u200B-\u200F\u2060\uFEFF]', '', text)
+        text = text.replace('\xa0', ' ')
+        # Normalizar espacios y saltos.
+        text = text.replace('\r\n', '\n').replace('\r', '\n')
+        text = re.sub(r'[\t\f\v]+', ' ', text)
+        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
+        text = re.sub(r'[ ]{2,}', ' ', text)
+
+        return text.strip()
+
+    def _html_to_reportlab_markup(self, html_content):
+        """Convierte HTML a markup simple compatible con ReportLab Paragraph."""
+        if not html_content:
+            return ""
+
+        text = html_content
+
+        # Eliminar bloques no visibles o no relevantes.
+        text = re.sub(
+            r'(?is)<([a-z0-9]+)[^>]*style=["\'][^"\']*(display\s*:\s*none|mso-hide\s*:\s*all|max-height\s*:\s*0)[^"\']*["\'][^>]*>.*?</\1>',
+            ' ',
+            text
+        )
+        text = re.sub(r'(?is)<!--.*?-->', ' ', text)
+        text = re.sub(r'(?is)<(script|style|head|title)[^>]*>.*?</\1>', ' ', text)
+
+        # Enlaces: mantener texto visible + URL para preservar información.
+        def _link_replacer(match):
+            url = html_lib.unescape(match.group(1) or '').strip()
+            label = match.group(2) or ''
+            label = re.sub(r'(?is)<[^>]+>', ' ', label)
+            label = html_lib.unescape(label)
+            label = re.sub(r'\s+', ' ', label).strip()
+            if not label:
+                label = url
+            if url and url != label:
+                return f"<u>{label}</u> ({url})"
+            return f"<u>{label}</u>"
+
+        text = re.sub(
+            r'(?is)<a\b[^>]*href\s*=\s*["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+            _link_replacer,
+            text
+        )
+
+        # Normalizar etiquetas de formato compatibles.
+        text = re.sub(r'(?is)<\s*strong\b[^>]*>', '<b>', text)
+        text = re.sub(r'(?is)</\s*strong\s*>', '</b>', text)
+        text = re.sub(r'(?is)<\s*em\b[^>]*>', '<i>', text)
+        text = re.sub(r'(?is)</\s*em\s*>', '</i>', text)
+        text = re.sub(r'(?is)<\s*b\b[^>]*>', '<b>', text)
+        text = re.sub(r'(?is)</\s*b\s*>', '</b>', text)
+        text = re.sub(r'(?is)<\s*i\b[^>]*>', '<i>', text)
+        text = re.sub(r'(?is)</\s*i\s*>', '</i>', text)
+        text = re.sub(r'(?is)<\s*u\b[^>]*>', '<u>', text)
+        text = re.sub(r'(?is)</\s*u\s*>', '</u>', text)
+
+        # Estructura de bloques.
+        text = re.sub(r'(?is)<\s*br\b[^>]*>', '<br/>', text)
+        text = re.sub(r'(?is)</\s*(p|div|tr|h1|h2|h3|h4|h5|h6)\s*>', '<br/><br/>', text)
+        text = re.sub(r'(?is)<\s*li\b[^>]*>', '• ', text)
+        text = re.sub(r'(?is)</\s*li\s*>', '<br/>', text)
+
+        # Proteger etiquetas soportadas antes de eliminar el resto.
+        placeholders = {}
+
+        def _protect(match):
+            token = f"__RL_TAG_{len(placeholders)}__"
+            placeholders[token] = match.group(0)
+            return token
+
+        text = re.sub(r'(?is)</?(b|i|u)>|<br\s*/?>', _protect, text)
+
+        # Remover etiquetas no soportadas conservando el texto.
+        text = re.sub(r'(?is)<[^>]+>', ' ', text)
+
+        # Decodificar entidades y normalizar espacios.
+        text = html_lib.unescape(text)
+        text = re.sub(r'[\u200B-\u200F\u2060\uFEFF]', '', text)
+        text = text.replace('\xa0', ' ')
+        text = text.replace('\r\n', '\n').replace('\r', '\n')
+        text = re.sub(r'[\t\f\v]+', ' ', text)
+        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
+        text = re.sub(r' {2,}', ' ', text)
+
+        # Escapar texto para ReportLab y restaurar etiquetas válidas.
+        text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        for token, tag in placeholders.items():
+            normalized_tag = tag
+            if re.match(r'(?is)<br\s*/?>', tag):
+                normalized_tag = '<br/>'
+            else:
+                normalized_tag = tag.lower()
+            text = text.replace(token, normalized_tag)
+
+        return text.strip()
     
     def _detect_quote_level(self, line):
         """Detecta el nivel de citado de una línea y si es una cabecera.
@@ -463,8 +598,13 @@ class PDFEmailExporter:
             return date_string
     
     def _get_email_body(self, msg):
-        """Extrae el cuerpo del correo electrónico"""
+        """Extrae el cuerpo del correo electrónico.
+
+        Returns:
+            tuple: (body: str, is_html: bool)
+        """
         body = ""
+        is_html = False
         
         if msg.is_multipart():
             for part in msg.walk():
@@ -477,6 +617,7 @@ class PDFEmailExporter:
                         if payload:
                             charset = part.get_content_charset() or 'utf-8'
                             body = payload.decode(charset, errors='replace')
+                            is_html = False
                             break
                     except Exception:
                         pass
@@ -487,9 +628,8 @@ class PDFEmailExporter:
                         if payload:
                             charset = part.get_content_charset() or 'utf-8'
                             html_body = payload.decode(charset, errors='replace')
-                            # Simplificar HTML (eliminar tags básicos)
-                            import re
-                            body = re.sub('<[^<]+?>', '', html_body)
+                            body = self._html_to_reportlab_markup(html_body)
+                            is_html = True
                     except Exception:
                         pass
         else:
@@ -497,11 +637,19 @@ class PDFEmailExporter:
                 payload = msg.get_payload(decode=True)
                 if payload:
                     charset = msg.get_content_charset() or 'utf-8'
-                    body = payload.decode(charset, errors='replace')
+                    raw_body = payload.decode(charset, errors='replace')
+                    if msg.get_content_type() == "text/html":
+                        body = self._html_to_reportlab_markup(raw_body)
+                        is_html = True
+                    else:
+                        body = raw_body
+                        is_html = False
             except Exception:
                 body = str(msg.get_payload())
+                is_html = False
         
-        return body.strip() if body else "[No se pudo extraer el cuerpo del mensaje]"
+        body = body.strip() if body else "[No se pudo extraer el cuerpo del mensaje]"
+        return body, is_html
     
     def _get_attachments_info(self, msg):
         """Extrae información de los archivos adjuntos"""
@@ -541,6 +689,263 @@ class PDFEmailExporter:
                         })
         
         return attachments
+
+    def _replace_cid_sources(self, html_body, cid_map):
+        """Reemplaza referencias cid: por data URLs embebidas."""
+        if not html_body or not cid_map:
+            return html_body
+
+        def _cid_replacer(match):
+            quote = match.group(1)
+            cid_value = match.group(2).strip().strip('<>')
+            replacement = cid_map.get(cid_value)
+            if replacement:
+                return f"={quote}{replacement}{quote}"
+            return match.group(0)
+
+        return re.sub(r'=(["\'])cid:([^"\']+)\1', _cid_replacer, html_body, flags=re.IGNORECASE)
+
+    def _extract_html_body_fragment(self, html_body):
+        """Extrae solo el contenido de <body> si existe para evitar nesting HTML completo."""
+        if not html_body:
+            return html_body
+
+        match = re.search(r'(?is)<body\b[^>]*>(.*?)</body>', html_body)
+        if match:
+            return match.group(1)
+        return html_body
+
+    def _extract_email_content(self, msg):
+        """Extrae html/texto y adjuntos de un mensaje para renderizado en navegador."""
+        html_body = None
+        text_body = None
+        cid_map = {}
+
+        if msg.is_multipart():
+            for part in msg.walk():
+                content_type = part.get_content_type()
+                content_disposition = str(part.get("Content-Disposition", "")).lower()
+                payload = part.get_payload(decode=True)
+
+                if payload is None:
+                    continue
+
+                charset = part.get_content_charset() or 'utf-8'
+
+                if content_type == "text/html" and "attachment" not in content_disposition and html_body is None:
+                    html_body = payload.decode(charset, errors='replace')
+                elif content_type == "text/plain" and "attachment" not in content_disposition and text_body is None:
+                    text_body = payload.decode(charset, errors='replace')
+
+                content_id = (part.get("Content-ID") or "").strip().strip("<>")
+                if content_id and content_type.startswith("image/"):
+                    b64_data = base64.b64encode(payload).decode('ascii')
+                    cid_map[content_id] = f"data:{content_type};base64,{b64_data}"
+        else:
+            payload = msg.get_payload(decode=True)
+            if payload:
+                charset = msg.get_content_charset() or 'utf-8'
+                decoded = payload.decode(charset, errors='replace')
+                if msg.get_content_type() == "text/html":
+                    html_body = decoded
+                else:
+                    text_body = decoded
+
+        if html_body:
+            html_body = self._replace_cid_sources(html_body, cid_map)
+            html_body = self._extract_html_body_fragment(html_body)
+
+        return {
+            "html": html_body,
+            "text": text_body
+        }
+
+    def _build_email_section_html(self, raw_headers, details, success, body_html, body_text, attachments, email_num, total_emails):
+        """Construye una sección HTML imprimible para un correo."""
+        from_text = html_lib.escape(raw_headers.get('from', 'N/A'))
+        to_text = html_lib.escape(raw_headers.get('to', 'N/A'))
+        cc_text = html_lib.escape(raw_headers.get('cc', ''))
+        subject_text = html_lib.escape(raw_headers.get('subject', 'N/A'))
+        date_text = html_lib.escape(raw_headers.get('date', 'N/A'))
+        message_id_text = html_lib.escape(raw_headers.get('message_id', 'N/A'))
+
+        verification_html = ""
+        if not details.get('verification_skipped'):
+            if details.get('no_signatures'):
+                verification_html = '<div class="verify verify-skip">Verificacion DKIM/ARC: omitida (sin firmas)</div>'
+            else:
+                verify_class = "verify-ok" if success else "verify-fail"
+                verify_text = "EXITOSA" if success else "FALLIDA"
+                method_text = f" ({html_lib.escape(details.get('method'))})" if details.get('method') else ""
+                verification_html = f'<div class="verify {verify_class}">Verificacion DKIM/ARC: {verify_text}{method_text}</div>'
+
+            if not success and not details.get('no_signatures'):
+                causes = details.get('failure_causes', [])
+                warning_html = '<div class="verify verify-fail">Advertencia: autenticidad no garantizada.</div>'
+                if causes:
+                    cause_items = ''.join([f'<li>{html_lib.escape(c)}</li>' for c in causes])
+                    warning_html += f'<ul class="verify-causes">{cause_items}</ul>'
+                verification_html += warning_html
+
+        body_content_html = ""
+        if body_html:
+            body_content_html = body_html
+        elif body_text:
+            body_content_html = f"<pre>{html_lib.escape(body_text)}</pre>"
+        else:
+            body_content_html = "<p>[No se pudo extraer el cuerpo del mensaje]</p>"
+
+        cc_row = ""
+        if cc_text:
+            cc_row = f"<tr><th>CC</th><td>{cc_text}</td></tr>"
+
+        attachments_html = ""
+        if attachments:
+            rows = []
+            for att in attachments:
+                rows.append(
+                    f"<tr><td>{html_lib.escape(att['filename'])}</td><td>{html_lib.escape(att['size'])}</td><td>{html_lib.escape(att.get('type', ''))}</td></tr>"
+                )
+            attachments_html = (
+                "<h3>Archivos adjuntos</h3>"
+                "<table class='attachments'><thead><tr><th>Nombre</th><th>Tamano</th><th>Tipo</th></tr></thead>"
+                f"<tbody>{''.join(rows)}</tbody></table>"
+            )
+
+        return f"""
+        <section class=\"email-section\">
+          <div class=\"email-title\">Correo {email_num} de {total_emails}</div>
+          {verification_html}
+          <table class=\"meta\">
+            <tr><th>De</th><td>{from_text}</td></tr>
+            <tr><th>Para</th><td>{to_text}</td></tr>
+            {cc_row}
+            <tr><th>Asunto</th><td>{subject_text}</td></tr>
+            <tr><th>Fecha</th><td>{date_text}</td></tr>
+            <tr><th>Message-ID</th><td>{message_id_text}</td></tr>
+          </table>
+          <h3>Cuerpo del mensaje</h3>
+          <div class=\"email-body\">{body_content_html}</div>
+          {attachments_html}
+        </section>
+        """
+
+    def _render_sections_to_pdf(self, sections_html, output_pdf, header_context=None):
+        """Renderiza secciones HTML a PDF usando Playwright."""
+        if sync_playwright is None:
+            raise RuntimeError(
+                "Playwright no esta instalado. Instale con: pip install playwright y luego ejecute: playwright install chromium"
+            )
+
+        header_context = header_context or {}
+        escaped_title = html_lib.escape(self.title)
+        escaped_from = html_lib.escape(header_context.get('from', 'N/A'))
+        escaped_to = html_lib.escape(header_context.get('to', 'N/A'))
+        escaped_subject = html_lib.escape(header_context.get('subject', 'N/A'))
+        escaped_date = html_lib.escape(header_context.get('date', 'N/A'))
+        escaped_email_label = html_lib.escape(header_context.get('email_label', ''))
+
+        document_html = f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    * {{ box-sizing: border-box; }}
+    body {{ font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #111; margin: 0; }}
+    .email-section {{ page-break-after: always; padding: 0; margin: 0; }}
+    .email-section:last-child {{ page-break-after: auto; }}
+    .email-title {{ font-size: 17px; font-weight: 700; margin: 0 0 8px 0; }}
+    .verify {{ margin: 0 0 8px 0; padding: 6px 8px; border-radius: 4px; font-weight: 700; }}
+    .verify-ok {{ background: #edf7ed; color: #1f6f43; border: 1px solid #b7dfc2; }}
+    .verify-fail {{ background: #fdecec; color: #a12622; border: 1px solid #f1bdbb; }}
+    .verify-skip {{ background: #eef4ff; color: #1d4f91; border: 1px solid #bfd2f0; }}
+    .verify-causes {{ margin: 6px 0 8px 18px; }}
+    table {{ width: 100%; }}
+    .meta, .attachments {{ border-collapse: collapse; margin-bottom: 10px; table-layout: fixed; }}
+    .meta th, .meta td, .attachments th, .attachments td {{ border: 1px solid #d9d9d9; padding: 5px 7px; vertical-align: top; word-wrap: break-word; }}
+    .meta th {{ width: 18%; background: #f1f1f1; text-align: left; }}
+    .attachments th {{ background: #f1f1f1; text-align: left; }}
+    h3 {{ margin: 8px 0 5px 0; font-size: 13px; }}
+    .email-body {{ border: 1px solid #e1e1e1; padding: 8px; overflow-wrap: anywhere; }}
+    .email-body pre {{ white-space: pre-wrap; margin: 0; font-family: Consolas, monospace; }}
+    .email-body p {{ margin: 0 0 8px 0; }}
+    .email-body table {{ margin-bottom: 8px; border-collapse: separate; }}
+    .email-body th, .email-body td {{ border: none; padding: initial; }}
+    .attachments th, .attachments td {{ font-size: 11px; }}
+    img {{ max-width: 100% !important; height: auto !important; }}
+  </style>
+</head>
+<body>
+{sections_html}
+</body>
+</html>
+"""
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page()
+                page.set_content(document_html, wait_until="networkidle")
+
+                header_template = f"""
+                                <div style="font-family: Arial, Helvetica, sans-serif; width:100%; padding:0 14px 6px 14px; font-size:9px; color:#111;">
+                                    <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:4px;">
+                                        <div style="font-weight:700; font-size:10px;">{escaped_title}</div>
+                                        <div style="font-weight:700;">{escaped_email_label}</div>
+                                    </div>
+                                    <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
+                                        <div>De: {escaped_from}</div>
+                                        <div>Fecha: {escaped_date}</div>
+                                    </div>
+                                    <div style="margin-bottom:2px;">Para: {escaped_to}</div>
+                                    <div>Asunto: {escaped_subject}</div>
+                                    <div style="margin-top:5px; border-top:1px solid #777;"></div>
+                </div>
+                """
+
+                footer_template = """
+                                <div style="font-family: Arial, Helvetica, sans-serif; font-size:9px; width:100%; padding:0 14px; color:#111; text-align:center;">
+                                    <div style="border-top:1px solid #777; margin-bottom:4px;"></div>
+                                    <span>""" + escaped_title + """ - Página <span class=\"pageNumber\"></span></span>
+                </div>
+                """
+
+                page.pdf(
+                    path=output_pdf,
+                    format="A4",
+                    print_background=True,
+                    display_header_footer=True,
+                    header_template=header_template,
+                    footer_template=footer_template,
+                    margin={"top": "110px", "bottom": "48px", "left": "24px", "right": "24px"}
+                )
+            finally:
+                browser.close()
+
+    def _merge_pdf_files(self, input_pdf_paths, output_pdf):
+        """Une múltiples PDFs en un único archivo de salida."""
+        if not input_pdf_paths:
+            raise RuntimeError("No hay PDFs para combinar.")
+
+        if len(input_pdf_paths) == 1:
+            with open(input_pdf_paths[0], 'rb') as src, open(output_pdf, 'wb') as dst:
+                dst.write(src.read())
+            return
+
+        if PdfReader is None or PdfWriter is None:
+            raise RuntimeError(
+                "Se requiere pypdf para combinar múltiples PDFs. Instale con: pip install pypdf"
+            )
+
+        writer = PdfWriter()
+        for pdf_path in input_pdf_paths:
+            reader = PdfReader(pdf_path)
+            for page in reader.pages:
+                writer.add_page(page)
+
+        with open(output_pdf, 'wb') as out_f:
+            writer.write(out_f)
     
     def _create_page_template(self, canvas_obj, doc, email_num, total_emails, email_headers, email_page_num=1, total_email_pages=1, total_pages=None):
         """Crea el template de cada página con encabezado y pie"""
@@ -605,8 +1010,22 @@ class PDFEmailExporter:
         """
         print(f"\nProcesando: {os.path.basename(eml_file)}")
         
-        # Verificar el correo
-        success, verify_output, details = self.verifier.verify_email(eml_file)
+        # Verificar el correo (si está habilitado)
+        if self.verify_emails:
+            success, verify_output, details = self.verifier.verify_email(eml_file)
+        else:
+            success = True
+            verify_output = ""
+            details = {
+                "success": True,
+                "method": None,
+                "arc_found": False,
+                "dkim_found": False,
+                "no_signatures": False,
+                "output": "",
+                "failure_causes": [],
+                "verification_skipped": True
+            }
         
         if not success and not force_export:
             safe_print(f"⚠ Verificación fallida. Use --force para exportar de todos modos.")
@@ -619,9 +1038,7 @@ class PDFEmailExporter:
         except Exception as e:
             safe_print(f"✗ Error al leer el archivo: {e}")
             return False, details
-        
-        # Extraer información del correo
-        # Headers sin sanitizar para el canvas (page header)
+
         raw_headers = {
             'from': self._decode_header(msg.get('From', 'N/A')),
             'to': self._decode_header(msg.get('To', 'N/A')),
@@ -630,9 +1047,8 @@ class PDFEmailExporter:
             'date': self._format_date_spanish(msg.get('Date', 'N/A')),
             'message_id': msg.get('Message-ID', 'N/A')
         }
-        
-        # Headers sanitizados para Paragraphs (tabla)
-        email_headers = {
+
+        details['headers'] = {
             'from': self._sanitize_text(raw_headers['from']),
             'to': self._sanitize_text(raw_headers['to']),
             'cc': self._sanitize_text(raw_headers['cc']),
@@ -640,174 +1056,35 @@ class PDFEmailExporter:
             'date': self._sanitize_text(raw_headers['date']),
             'message_id': self._sanitize_text(raw_headers['message_id'])
         }
-        
-        body = self._get_email_body(msg)
-        
-        story = []
-        
-        # Título
-        story.append(Paragraph(self.title, self.styles['CustomTitle']))
-        story.append(Spacer(1, 0.3*inch))
-        
-        # Información de verificación
-        if details.get('no_signatures'):
-            verify_style = self.styles['VerificationSkipped']
-            verify_text = "⊘ Verificación DKIM/ARC: OMITIDA - No hay firmas para verificar"
-        else:
-            verify_style = self.styles['VerificationSuccess'] if success else self.styles['VerificationFail']
-            verify_text = f"{'✓' if success else '✗'} Verificación DKIM/ARC: {'EXITOSA' if success else 'FALLIDA'}"
-            if details.get('method'):
-                verify_text += f" (Método: {details['method']})"
-        
-        story.append(Paragraph(verify_text, verify_style))
-        
-        if not success and not details.get('no_signatures'):
-            # Determinar qué verificaciones fallaron
-            failed_methods = []
-            if details.get('dkim_found'):
-                failed_methods.append('DKIM')
-            if details.get('arc_found'):
-                failed_methods.append('ARC')
-            
-            methods_text = ' y '.join(failed_methods) if failed_methods else 'DKIM/ARC'
-            warning_text = f"[!] ADVERTENCIA: La verificación {methods_text} falló. La autenticidad no está garantizada."
-            
-            story.append(Paragraph(
-                warning_text,
-                self.styles['VerificationFail']
-            ))
-            
-            # Mostrar causas específicas del fallo si están disponibles
-            failure_causes = details.get('failure_causes', [])
-            if failure_causes:
-                story.append(Spacer(1, 0.1*inch))
-                story.append(Paragraph(
-                    "<b>Causas del fallo detectadas:</b>",
-                    self.styles['VerificationFail']
-                ))
-                for cause in failure_causes:
-                    story.append(Paragraph(
-                        f"  - {self._sanitize_text(cause)}",
-                        self.styles['VerificationFail']
-                    ))
-        
-        story.append(Spacer(1, 0.2*inch))
-        
-        # Tabla con información del correo
-        # Usar Paragraph para permitir word wrapping en celdas largas
-        cell_style = ParagraphStyle(
-            'TableCell',
-            parent=self.styles['Normal'],
-            fontSize=9,
-            leading=11
-        )
-        
-        data = [
-            [Paragraph('<b>De:</b>', self.styles['Normal']), Paragraph(email_headers['from'], cell_style)],
-            [Paragraph('<b>Para:</b>', self.styles['Normal']), Paragraph(email_headers['to'], cell_style)],
-        ]
-        
-        # Solo agregar CC si existe
-        if email_headers['cc']:
-            data.append([Paragraph('<b>CC:</b>', self.styles['Normal']), Paragraph(email_headers['cc'], cell_style)])
-        
-        data.extend([
-            [Paragraph('<b>Asunto:</b>', self.styles['Normal']), Paragraph(email_headers['subject'], cell_style)],
-            [Paragraph('<b>Fecha:</b>', self.styles['Normal']), Paragraph(email_headers['date'], cell_style)],
-            [Paragraph('<b>Message-ID:</b>', self.styles['Normal']), Paragraph(email_headers['message_id'], cell_style)]
-        ])
-        
-        table = Table(data, colWidths=[1.2*inch, 5*inch])
-        table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (0, -1), colors.grey),
-            ('TEXTCOLOR', (0, 0), (0, -1), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-            ('TOPPADDING', (0, 0), (-1, -1), 8),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
-        ]))
-        
-        story.append(table)
-        story.append(Spacer(1, 0.3*inch))
-        
-        # Cuerpo del mensaje
-        story.append(Paragraph("<b>Cuerpo del mensaje:</b>", self.styles['EmailHeader']))
-        story.append(Spacer(1, 0.1*inch))
-        
-        # Dividir el cuerpo en párrafos y detectar niveles de citado
-        body_paragraphs = body.split('\n')
-        for para in body_paragraphs:
-            if para.strip():
-                quote_level, is_header = self._detect_quote_level(para)
-                
-                # Remover los > del inicio para el texto mostrado
-                display_text = para.lstrip()
-                while display_text.startswith('>'):
-                    display_text = display_text[1:].lstrip()
-                
-                # Sanitizar primero
-                sanitized_para = self._sanitize_body_text(display_text)
-                
-                # Si es cabecera citada, aplicar formato en negrita a palabras clave (después de sanitizar)
-                if is_header:
-                    sanitized_para = self._format_quoted_header(sanitized_para)
-                    style = self.styles['QuotedHeader']
-                else:
-                    # Seleccionar estilo según el nivel de citado
-                    if quote_level == 0:
-                        style = self.styles['EmailBody']
-                    elif quote_level == 1:
-                        style = self.styles['QuotedText1']
-                    elif quote_level == 2:
-                        style = self.styles['QuotedText2']
-                    else:  # 3 o más
-                        style = self.styles['QuotedText3']
-                
-                story.append(Paragraph(sanitized_para, style))
-        
-        # Archivos adjuntos
+
+        content = self._extract_email_content(msg)
         attachments = self._get_attachments_info(msg)
-        if attachments:
-            story.append(Spacer(1, 0.2*inch))
-            story.append(Paragraph("<b>Archivos adjuntos:</b>", self.styles['EmailHeader']))
-            story.append(Spacer(1, 0.1*inch))
-            
-            # Crear tabla con información de adjuntos
-            attach_data = [['Nombre', 'Tamaño']]
-            for att in attachments:
-                attach_data.append([
-                    self._sanitize_body_text(att['filename']),
-                    att['size']
-                ])
-            
-            attach_table = Table(attach_data, colWidths=[4.5*inch, 1.7*inch])
-            attach_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 8),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
-            ]))
-            story.append(attach_table)
-        
-        # Construir PDF
-        doc = SimpleDocTemplate(
-            output_pdf,
-            pagesize=letter,
-            rightMargin=inch,
-            leftMargin=inch,
-            topMargin=1.5*inch,
-            bottomMargin=inch
+        section_html = self._build_email_section_html(
+            raw_headers,
+            details,
+            success,
+            content.get('html'),
+            content.get('text'),
+            attachments,
+            1,
+            1
         )
-        
-        def page_template(canvas_obj, doc_obj):
-            # Para un solo correo, página actual = página del correo
-            self._create_page_template(canvas_obj, doc_obj, 1, 1, raw_headers, doc_obj.page, doc_obj.page, None)
-        
-        doc.build(story, onFirstPage=page_template, onLaterPages=page_template)
+
+        try:
+            self._render_sections_to_pdf(
+                section_html,
+                output_pdf,
+                header_context={
+                    "from": raw_headers.get("from", "N/A"),
+                    "to": raw_headers.get("to", "N/A"),
+                    "subject": raw_headers.get("subject", "N/A"),
+                    "date": raw_headers.get("date", "N/A"),
+                    "email_label": "Correo 1 de 1",
+                }
+            )
+        except Exception as e:
+            safe_print(f"✗ Error al generar PDF con Playwright: {e}")
+            return False, details
         
         safe_print(f"✓ PDF generado: {output_pdf}")
         return True, details
@@ -823,15 +1100,29 @@ class PDFEmailExporter:
         """
         print(f"\nProcesando {len(eml_files)} correo(s)...")
         
-        story = []
+        section_entries = []
         results = []
-        included_results = []  # Solo los correos que se agregaron al PDF
+        included_results = []
         
         for idx, eml_file in enumerate(eml_files, 1):
             print(f"\n[{idx}/{len(eml_files)}] {os.path.basename(eml_file)}")
             
-            # Verificar el correo
-            success, verify_output, details = self.verifier.verify_email(eml_file)
+            # Verificar el correo (si está habilitado)
+            if self.verify_emails:
+                success, verify_output, details = self.verifier.verify_email(eml_file)
+            else:
+                success = True
+                verify_output = ""
+                details = {
+                    "success": True,
+                    "method": None,
+                    "arc_found": False,
+                    "dkim_found": False,
+                    "no_signatures": False,
+                    "output": "",
+                    "failure_causes": [],
+                    "verification_skipped": True
+                }
             details['filename'] = os.path.basename(eml_file)
             results.append(details)
             
@@ -849,7 +1140,6 @@ class PDFEmailExporter:
                 continue
             
             # Extraer información
-            # Headers sin sanitizar para el canvas (page header)
             raw_headers = {
                 'from': self._decode_header(msg.get('From', 'N/A')),
                 'to': self._decode_header(msg.get('To', 'N/A')),
@@ -871,170 +1161,26 @@ class PDFEmailExporter:
             
             details['headers'] = email_headers
             details['raw_headers'] = raw_headers
-            body = self._get_email_body(msg)
+            content = self._extract_email_content(msg)
+            attachments = self._get_attachments_info(msg)
             
             # Agregar a la lista de correos incluidos en el PDF
             included_results.append(details)
-            
-            # Marcar el inicio de este email en el story ANTES del PageBreak
-            # para que la primera página del nuevo email tenga el marcador correcto
-            if len(included_results) > 1:
-                # Agregar el marcador antes del page break
-                story.append(EmailMarker(len(included_results) - 1, {'headers': email_headers, 'raw_headers': raw_headers}))
-                story.append(PageBreak())
-            else:
-                # Para el primer email, solo agregamos el marcador
-                story.append(EmailMarker(len(included_results) - 1, {'headers': email_headers, 'raw_headers': raw_headers}))
-            
-            # Número de correo
-            story.append(Paragraph(
-                f"Correo {len(included_results)} de {len(eml_files)}",
-                self.styles['CustomTitle']
-            ))
-            story.append(Spacer(1, 0.2*inch))
-            
-            # Verificación
-            if details.get('no_signatures'):
-                verify_style = self.styles['VerificationSkipped']
-                verify_text = "⊘ Verificación: OMITIDA - No hay firmas para verificar"
-            else:
-                verify_style = self.styles['VerificationSuccess'] if success else self.styles['VerificationFail']
-                verify_text = f"{'✓' if success else '✗'} Verificación: {'EXITOSA' if success else 'FALLIDA'}"
-                if details.get('method'):
-                    verify_text += f" ({details['method']})"
-            
-            story.append(Paragraph(verify_text, verify_style))
-            
-            if not success and not details.get('no_signatures'):
-                # Determinar qué verificaciones fallaron
-                failed_methods = []
-                if details.get('dkim_found'):
-                    failed_methods.append('DKIM')
-                if details.get('arc_found'):
-                    failed_methods.append('ARC')
-                
-                methods_text = ' y '.join(failed_methods) if failed_methods else 'DKIM/ARC'
-                warning_text = f"⚠ ADVERTENCIA: Verificación {methods_text} fallida"
-                
-                story.append(Paragraph(
-                    warning_text,
-                    self.styles['VerificationFail']
-                ))
-                
-                # Mostrar causas específicas del fallo si están disponibles
-                failure_causes = details.get('failure_causes', [])
-                if failure_causes:
-                    story.append(Spacer(1, 0.1*inch))
-                    story.append(Paragraph(
-                        "<b>Causas del fallo detectadas:</b>",
-                        self.styles['VerificationFail']
-                    ))
-                    for cause in failure_causes:
-                        story.append(Paragraph(
-                            f"  - {self._sanitize_text(cause)}",
-                            self.styles['VerificationFail']
-                        ))
-            
-            story.append(Spacer(1, 0.2*inch))
-            
-            # Tabla con información
-            # Usar Paragraph para permitir word wrapping en celdas largas
-            cell_style = ParagraphStyle(
-                'TableCell',
-                parent=self.styles['Normal'],
-                fontSize=9,
-                leading=11
+            section_html = self._build_email_section_html(
+                raw_headers,
+                details,
+                success,
+                content.get('html'),
+                content.get('text'),
+                attachments,
+                len(included_results),
+                len(eml_files)
             )
-            
-            data = [
-                [Paragraph('<b>De:</b>', self.styles['Normal']), Paragraph(email_headers['from'], cell_style)],
-                [Paragraph('<b>Para:</b>', self.styles['Normal']), Paragraph(email_headers['to'], cell_style)],
-            ]
-            
-            # Solo agregar CC si existe
-            if email_headers['cc']:
-                data.append([Paragraph('<b>CC:</b>', self.styles['Normal']), Paragraph(email_headers['cc'], cell_style)])
-            
-            data.extend([
-                [Paragraph('<b>Asunto:</b>', self.styles['Normal']), Paragraph(email_headers['subject'], cell_style)],
-                [Paragraph('<b>Fecha:</b>', self.styles['Normal']), Paragraph(email_headers['date'], cell_style)],
-                [Paragraph('<b>Message-ID:</b>', self.styles['Normal']), Paragraph(email_headers['message_id'], cell_style)]
-            ])
-            
-            table = Table(data, colWidths=[1.2*inch, 5*inch])
-            table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (0, -1), colors.grey),
-                ('TEXTCOLOR', (0, 0), (0, -1), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-                ('TOPPADDING', (0, 0), (-1, -1), 8),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
-            ]))
-            
-            story.append(table)
-            story.append(Spacer(1, 0.2*inch))
-            
-            # Cuerpo
-            story.append(Paragraph("<b>Cuerpo del mensaje:</b>", self.styles['EmailHeader']))
-            story.append(Spacer(1, 0.1*inch))
-            
-            body_paragraphs = body.split('\n')
-            for para in body_paragraphs:
-                if para.strip():
-                    quote_level, is_header = self._detect_quote_level(para)
-                    
-                    # Remover los > del inicio para el texto mostrado
-                    display_text = para.lstrip()
-                    while display_text.startswith('>'):
-                        display_text = display_text[1:].lstrip()
-                    
-                    # Sanitizar primero
-                    sanitized_para = self._sanitize_body_text(display_text)
-                    
-                    # Si es cabecera citada, aplicar formato en negrita a palabras clave (después de sanitizar)
-                    if is_header:
-                        sanitized_para = self._format_quoted_header(sanitized_para)
-                        style = self.styles['QuotedHeader']
-                    else:
-                        # Seleccionar estilo según el nivel de citado
-                        if quote_level == 0:
-                            style = self.styles['EmailBody']
-                        elif quote_level == 1:
-                            style = self.styles['QuotedText1']
-                        elif quote_level == 2:
-                            style = self.styles['QuotedText2']
-                        else:  # 3 o más
-                            style = self.styles['QuotedText3']
-                    
-                    story.append(Paragraph(sanitized_para, style))
-            
-            # Archivos adjuntos
-            attachments = self._get_attachments_info(msg)
-            if attachments:
-                story.append(Spacer(1, 0.2*inch))
-                story.append(Paragraph("<b>Archivos adjuntos:</b>", self.styles['EmailHeader']))
-                story.append(Spacer(1, 0.1*inch))
-                
-                # Crear tabla con información de adjuntos
-                attach_data = [['Nombre', 'Tamaño']]
-                for att in attachments:
-                    attach_data.append([
-                        self._sanitize_body_text(att['filename']),
-                        att['size']
-                    ])
-                
-                attach_table = Table(attach_data, colWidths=[4.5*inch, 1.7*inch])
-                attach_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, -1), 8),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey)
-                ]))
-                story.append(attach_table)
+            section_entries.append({
+                "html": section_html,
+                "raw_headers": raw_headers,
+                "email_index": len(included_results),
+            })
             
             safe_print(f"✓ Correo agregado al lote")
         
@@ -1042,52 +1188,29 @@ class PDFEmailExporter:
             safe_print("\n✗ No se agregaron correos al lote")
             return []
         
-        # Marcar cada correo con un atributo especial para rastrear cambios
-        # Agregar marcadores especiales al story
-        email_markers = []
-        for i, item in enumerate(story):
-            if item.__class__.__name__ == 'PageBreak':
-                email_markers.append(i)
-        
-        # Crear el documento PDF
-        doc = SimpleDocTemplate(
-            output_pdf,
-            pagesize=letter,
-            rightMargin=inch,
-            leftMargin=inch,
-            topMargin=1.5*inch,
-            bottomMargin=inch
-        )
-        
-        # Rastrear en qué correo estamos usando una estrategia más directa
-        # Guardamos el índice del email actual que se actualiza cuando procesamos EmailMarker
-        current_email = [0]  # Usamos lista para que sea mutable en el closure
-        
-        # Hook personalizado para EmailMarker
-        original_EmailMarker_draw = EmailMarker.draw
-        def tracked_draw(self):
-            current_email[0] = self.email_index
-            return original_EmailMarker_draw(self)
-        
-        # Parchear temporalmente el método draw
-        EmailMarker.draw = tracked_draw
-        
-        def page_template(canvas_obj, doc_obj):
-            # Usar el índice del email actual
-            email_idx = min(current_email[0], len(included_results) - 1)
-            
-            if email_idx < len(included_results):
-                headers = included_results[email_idx].get('headers', {})
-                raw_headers = included_results[email_idx].get('raw_headers', headers)
-                
-                self._create_page_template(canvas_obj, doc_obj, email_idx + 1, len(included_results), 
-                                         raw_headers, 1, 1, None)
-        
         try:
-            doc.build(story, onFirstPage=page_template, onLaterPages=page_template)
-        finally:
-            # Restaurar el método original
-            EmailMarker.draw = original_EmailMarker_draw
+            temp_pdf_paths = []
+            with tempfile.TemporaryDirectory(prefix="export_email_") as tmp_dir:
+                for entry in section_entries:
+                    temp_pdf_path = os.path.join(tmp_dir, f"email_{entry['email_index']:04d}.pdf")
+                    header_ref = entry.get("raw_headers", {})
+                    self._render_sections_to_pdf(
+                        entry["html"],
+                        temp_pdf_path,
+                        header_context={
+                            "from": header_ref.get("from", "N/A"),
+                            "to": header_ref.get("to", "N/A"),
+                            "subject": header_ref.get("subject", "N/A"),
+                            "date": header_ref.get("date", "N/A"),
+                            "email_label": f"Correo {entry['email_index']} de {len(included_results)}",
+                        }
+                    )
+                    temp_pdf_paths.append(temp_pdf_path)
+
+                self._merge_pdf_files(temp_pdf_paths, output_pdf)
+        except Exception as e:
+            safe_print(f"✗ Error al generar PDF con Playwright: {e}")
+            return []
         
         safe_print(f"\n✓ PDF generado: {output_pdf}")
         return results
@@ -1117,7 +1240,9 @@ def save_verification_log(results, output_file, verbose=False):
                 f.write(f"Message-ID: {headers.get('message_id', 'N/A')}\n")
             
             # Estado de verificación
-            if result.get('no_signatures'):
+            if result.get('verification_skipped'):
+                f.write(f"\nEstado: ⊘ OMITIDA por parámetro --no-verify\n")
+            elif result.get('no_signatures'):
                 f.write(f"\nEstado: ⊘ OMITIDA - No hay firmas para verificar\n")
             else:
                 f.write(f"\nEstado: {'✓ EXITOSA' if result.get('success') else '✗ FALLIDA'}\n")
@@ -1190,6 +1315,12 @@ def main():
         action="store_true",
         help="Exporta incluso si la verificación DKIM/ARC falla"
     )
+
+    parser.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Omite la verificación DKIM/ARC y exporta directamente"
+    )
     
     parser.add_argument(
         "-v", "--verbose",
@@ -1227,7 +1358,11 @@ def main():
     print(f"Encontrados {len(eml_files)} archivo(s) .eml")
     
     # Crear exportador
-    exporter = PDFEmailExporter(title=args.title, verbose=args.verbose)
+    exporter = PDFEmailExporter(
+        title=args.title,
+        verbose=args.verbose,
+        verify_emails=not args.no_verify
+    )
     
     # Determinar archivos de salida
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
